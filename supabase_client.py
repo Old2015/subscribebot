@@ -1,6 +1,6 @@
 import psycopg2
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
 
 log = logging.getLogger(__name__)
@@ -16,8 +16,8 @@ def _get_connection():
 
 def check_db_structure():
     """
-    Проверяем, что таблицы 'users' и 'payments' существуют.
-    Если что-то не так – выводим ошибку в лог.
+    Проверяем, что таблицы 'users' и 'payments' доступны.
+    Если их нет или есть проблемы — логируем ошибку.
     """
     tables = ["users", "payments"]
     for t in tables:
@@ -31,9 +31,8 @@ def check_db_structure():
 
 def get_user_by_telegram_id(telegram_id: int):
     """
-    Возвращает словарь с данными пользователя, 
-    если в таблице users есть запись, иначе None.
-    Предполагаем, что telegram_id BIGINT UNIQUE.
+    Ищем пользователя в таблице 'users' по полю telegram_id.
+    Возвращаем словарь (колонки) или None, если не найден.
     """
     with _get_connection() as conn:
         with conn.cursor() as cur:
@@ -46,9 +45,12 @@ def get_user_by_telegram_id(telegram_id: int):
 
 def create_user_with_trial(telegram_id: int, username: str, trial_days: int):
     """
-    Создаёт нового пользователя в таблице 'users', 
-    выставляет trial_end = NOW() + interval 'X day'.
-    Возвращает словарь с полями пользователя.
+    Создаём нового пользователя:
+      - telegram_id (уникальный)
+      - username
+      - trial_end = NOW() + interval 'X day'
+      - created_at = NOW()
+    Возвращаем dict с данными пользователя (строка из БД).
     """
     with _get_connection() as conn:
         with conn.cursor() as cur:
@@ -65,26 +67,24 @@ def create_user_with_trial(telegram_id: int, username: str, trial_days: int):
                 return dict(zip(cols, row))
             return None
 
-def update_deposit_info(user_id: int, address: str, pk: str):
+def update_deposit_info(user_id: int, address: str):
     """
-    Сохраняем в таблице users:
-      deposit_address = address
-      private_key = pk  (опционально, если у вас есть такое поле)
+    Сохраняем адрес для оплаты (TRC20/ETH) в таблице 'users'.
+    deposit_address = address
+    (приватный ключ не храним!)
     """
     with _get_connection() as conn:
         with conn.cursor() as cur:
-            # Убедитесь, что в таблице users есть поля deposit_address, private_key
             cur.execute("""
                 UPDATE users
-                   SET deposit_address = %s,
-                       private_key = %s
+                   SET deposit_address = %s
                  WHERE id = %s
-            """, (address, pk, user_id))
+            """, (address, user_id))
             conn.commit()
 
 def update_deposit_created_at(user_id: int, created_at: datetime):
     """
-    Обновляет deposit_created_at = created_at.
+    Обновляем время, когда был выдан адрес (deposit_created_at).
     """
     with _get_connection() as conn:
         with conn.cursor() as cur:
@@ -97,27 +97,26 @@ def update_deposit_created_at(user_id: int, created_at: datetime):
 
 def reset_deposit_address(user_id: int):
     """
-    Сбрасываем поля deposit_address, deposit_created_at, private_key (если есть).
+    Сбрасываем поля deposit_address и deposit_created_at,
+    если нужно освободить/отключить старый адрес.
     """
     with _get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE users
                    SET deposit_address = NULL,
-                       deposit_created_at = NULL,
-                       private_key = NULL
+                       deposit_created_at = NULL
                  WHERE id = %s
             """, (user_id,))
             conn.commit()
 
-#
-# Пример методов для payments (если нужно)
-#
+# Примеры функций для таблицы payments, если нужны:
 
 def create_payment(user_id: int, txhash: str, amount_usdt: float, days_added: int):
     """
-    Вставляем запись о платеже в таблицу payments.
-    paid_at (вручную или NOW()), status='paid'...
+    Вставляем запись о платеже в 'payments':
+      user_id, txhash, amount_usdt, days_added, paid_at=NOW(), status='paid', created_at=NOW()
+    Возвращаем id платёжной записи.
     """
     with _get_connection() as conn:
         with conn.cursor() as cur:
@@ -134,11 +133,11 @@ def create_payment(user_id: int, txhash: str, amount_usdt: float, days_added: in
 
 def get_payment_by_id(payment_id: int):
     """
-    Пример функции: вернуть запись из payments по ID.
+    Пример: вернуть запись о платеже по ID.
     """
     with _get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM payments WHERE id=%s", (payment_id,))
+            cur.execute("SELECT * FROM payments WHERE id = %s", (payment_id,))
             row = cur.fetchone()
             if row:
                 cols = [desc[0] for desc in cur.description]
