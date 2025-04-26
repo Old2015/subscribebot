@@ -1,7 +1,6 @@
-# config.py
 import os
 from dotenv import load_dotenv
-from aiogram import Bot
+from aiogram import Bot, Dispatcher
 
 load_dotenv()
 
@@ -21,16 +20,20 @@ DB_NAME = os.getenv("DB_NAME")
 TRON_MASTER_SEED = os.getenv("TRON_MASTER_SEED")
 TRC20_USDT_CONTRACT = os.getenv("TRC20_USDT_CONTRACT")
 
-# Подписка
+# Параметры подписки
 SUBSCRIPTION_PRICE_USDT = float(os.getenv("SUBSCRIPTION_PRICE_USDT", "100"))
 DAYS_FOR_100_USDT = int(os.getenv("DAYS_FOR_100_USDT", "30"))
 
-# FREE trial days
-FREE_TRIAL_DAYS = int(os.getenv("FREE_TRIAL_DAYS", "2"))  # по умолчанию 2 суток
+# Бесплатный триал
+FREE_TRIAL_DAYS = int(os.getenv("FREE_TRIAL_DAYS", "2"))
 
 # Интервалы и расписания
 CHECK_INTERVAL_MIN = int(os.getenv("CHECK_INTERVAL_MIN", "10"))
 DAILY_ANALYSIS_TIME = os.getenv("DAILY_ANALYSIS_TIME", "09:00")
 
-# Aiogram Bot instance (singleton)
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# Создаем бота и диспетчер
 bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
