@@ -4,32 +4,63 @@
 # main.py
 
 import asyncio
-from aiogram import executor
-from config import dp
 import logging
+from aiogram import Dispatcher
+from config import bot
+import logger_config
+import supabase_client
+from daily_tasks import run_daily_tasks
+from admin_report import send_admin_report
+from start import start_router
+from subscription import subscription_router
+from tron_service import poll_trc20_transactions
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from config import CHECK_INTERVAL_MIN, DAILY_ANALYSIS_TIME
 
-# Импортируем файл, чтобы логгеры были сконфигурированы до начала работы
-import logger_config  # <-- вызывает настройку логирования
-from supabase_client import check_db_structure
 
-async def on_startup(_):
+async def scheduled_tron_poll():
+    """Вызывается каждые CHECK_INTERVAL_MIN минут для опроса Tron-сети."""
+    await poll_trc20_transactions()
+
+
+async def scheduled_daily_job():
+    """Вызывается в DAILY_ANALYSIS_TIME для ежедневных задач."""
+    # run daily tasks
+    await run_daily_tasks(bot)
+    # send admin report
+    await send_admin_report(bot)
+
+
+async def main():
+    # 1) Настройка логгера
+    logger_config.setup_logger()
     logging.info("Bot is starting...")
-    # Проверяем базу
-    check_db_structure()
-    logging.info("DB structure check is done.")
-    print("Bot is online.")
 
-def main():
-    from subscription import register_handlers as reg_sub
-    from start import register_handlers as reg_start
-    # и т.д. или как у вас
+    # 2) Проверка структуры БД
+    supabase_client.check_db_structure()
 
-    # Регистрируем хендлеры
-    reg_start(dp)
-    reg_sub(dp)
-    
-    # Запуск поллинга
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    # 3) Создаём Dispatcher
+    dp = Dispatcher()
+
+    # Подключаем роутеры
+    dp.include_router(start_router)
+    dp.include_router(subscription_router)
+
+    # 4) Настраиваем APScheduler
+    scheduler = AsyncIOScheduler()
+    # - каждые N минут опрашиваем Tron
+    scheduler.add_job(scheduled_tron_poll, "interval", minutes=CHECK_INTERVAL_MIN)
+
+    # - ежедневная задача (ежедневные проверки + отчёт)
+    hour, minute = map(int, DAILY_ANALYSIS_TIME.split(':'))
+    scheduler.add_job(scheduled_daily_job, "cron", hour=hour, minute=minute)
+
+    scheduler.start()
+
+    logging.info("Dispatcher setup complete. Starting polling.")
+    # 5) Запуск бота
+    await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

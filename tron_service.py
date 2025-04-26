@@ -1,36 +1,30 @@
-import config
+# tron_service.py
+import logging
 import qrcode
 import tempfile
-# from tronpy import Tron
-# from tronpy.keys import PrivateKey
-# ...
+
+log = logging.getLogger(__name__)
 
 def generate_new_tron_address():
-    """
-    Заглушка: в реальности нужно генерировать адрес с помощью
-    tronpy + master seed (HD) или просто random PrivateKey().
-    """
-    new_address = "TEXAMPLE123..."
-    return new_address
+    # Заглушка
+    new_addr = "TEXAMPLE..."
+    log.debug(f"Generated Tron address: {new_addr}")
+    return new_addr
 
-def create_qr_code(data:str):
-    """
-    Генерируем QR-код для адреса (или URI).
-    Возвращаем путь к временному PNG-файлу.
-    """
+def create_qr_code(data: str):
     try:
         img = qrcode.make(data)
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         img.save(tmp.name)
         return tmp.name
     except Exception as e:
-        print("QR error:", e)
+        log.error(f"QR code generation error: {e}")
         return None
 
-def poll_trc20_transactions():
+async def poll_trc20_transactions():
     """
-    Заглушка: опрашиваем блокчейн Tron, ищем входящие транзакции USDT
-    Возвращаем список словарей: { 'to':..., 'amount':..., 'txhash':... }
+    Заглушка: опрос сети Tron, чтобы найти входящие транзакции.
+    Вызывается из планировщика каждые N минут, например.
     """
-    # Реализовать через tronpy + logs
-    return []
+    log.debug("Polling Tron transactions (placeholder).")
+    # ...

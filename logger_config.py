@@ -3,38 +3,30 @@
 import logging
 import sys
 
-# Создаем форматтер, который будет использоваться во всех хендлерах
 LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-formatter = logging.Formatter(LOG_FORMAT)
 
-# Создаем логгер (можно взять корневой: logging.getLogger())
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # Уровень DEBUG для корневого логгера
+def setup_logger():
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)  # Ловим все логи
 
-# 1) subscribefull.log (записываем ВСЁ, включая DEBUG)
-full_handler = logging.FileHandler("subscribefull.log", mode='a', encoding='utf-8')
-full_handler.setLevel(logging.DEBUG)
-full_handler.setFormatter(formatter)
-logger.addHandler(full_handler)
+    formatter = logging.Formatter(LOG_FORMAT)
 
-# 2) subscribe.log (записываем «основные» логи – с INFO и выше)
-main_handler = logging.FileHandler("subscribe.log", mode='a', encoding='utf-8')
-main_handler.setLevel(logging.INFO)
-main_handler.setFormatter(formatter)
-logger.addHandler(main_handler)
+    # 1) Файл для ВСЕХ логов
+    fh_full = logging.FileHandler("subscribefull.log", mode='a', encoding='utf-8')
+    fh_full.setLevel(logging.DEBUG)
+    fh_full.setFormatter(formatter)
+    logger.addHandler(fh_full)
 
-# 3) вывод в консоль (тоже INFO и выше)
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+    # 2) Файл для основных логов (INFO+)
+    fh_main = logging.FileHandler("subscribe.log", mode='a', encoding='utf-8')
+    fh_main.setLevel(logging.INFO)
+    fh_main.setFormatter(formatter)
+    logger.addHandler(fh_main)
 
-# Таким образом, все логи уровня DEBUG пойдут в subscribefull.log,
-# а логи уровня INFO и выше пойдут в subscribe.log и в консоль.
+    # 3) Консоль (тоже INFO+)
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
-# Чтобы в других модулях просто использовать:
-# import logging
-# log = logging.getLogger(__name__)
-# log.debug("debug message")
-# log.info("info message")
-# etc.
+    logging.debug("Logger set up: DEBUG to subscribefull.log, INFO+ to subscribe.log & console.")
