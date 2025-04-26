@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-
 import asyncio
 import logging
 from aiogram import Dispatcher
@@ -21,37 +18,35 @@ async def scheduled_tron_poll():
     await poll_trc20_transactions()
 
 async def scheduled_daily_job():
-    """Вызывается в DAILY_ANALYSIS_TIME для ежедневных задач (почистить триалы и т.д.)."""
+    """Вызывается в DAILY_ANALYSIS_TIME для ежедневных задач (почистить триал, отчет)."""
     await run_daily_tasks(bot)
     await send_admin_report(bot)
 
 async def main():
-    # 1) Настраиваем логгер (две лог-файла + консоль)
+    # Настраиваем логгеры
     logger_config.setup_logger()
     logging.info("Bot is starting...")
 
-    # 2) Проверка структуры БД (таблицы users, payments)
+    # Проверка структуры БД (таблицы users, payments)
     supabase_client.check_db_structure()
 
-    # 3) Создаём диспетчер Aiogram 3.x
+    # Создаем диспетчер (Aiogram 3)
     dp = Dispatcher()
 
-    # Подключаем роутеры (start, subscription)
+    # Подключаем роутеры
     dp.include_router(start_router)
     dp.include_router(subscription_router)
 
-    # 4) Планировщик (APSсheduler) для фоновых задач
+    # Планировщик для фоновых задач
     scheduler = AsyncIOScheduler()
     # - каждые N минут: poll Tron
     scheduler.add_job(scheduled_tron_poll, "interval", minutes=CHECK_INTERVAL_MIN)
-    # - раз в сутки: чистка + отчёт
-    hour, minute = map(int, DAILY_ANALYSIS_TIME.split(':'))
+    # - ежедневная задача
+    hour, minute = map(int, DAILY_ANALYSIS_TIME.split(":"))
     scheduler.add_job(scheduled_daily_job, "cron", hour=hour, minute=minute)
     scheduler.start()
 
     logging.info("Dispatcher setup complete. Starting polling.")
-
-    # 5) Запуск Polling (async)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
