@@ -1,19 +1,34 @@
 import psycopg2
-import os
-from datetime import datetime
+import logging
+from config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
 
-# Берём настройки из config.py (но можно напрямую из env)
-import config
+log = logging.getLogger(__name__)
 
 def _get_connection():
     return psycopg2.connect(
-        user=config.DB_USER,
-        password=config.DB_PASSWORD,
-        host=config.DB_HOST,
-        port=config.DB_PORT,
-        database=config.DB_NAME
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_NAME
     )
 
+def check_db_structure():
+    """
+    Проверяем, что таблицы users/payments существуют и доступны.
+    Если что-то не так — логируем ошибку, можно выбросить исключение.
+    """
+    tables_to_check = ["users", "payments"]
+    for table in tables_to_check:
+        try:
+            with _get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT 1 FROM {table} LIMIT 1;")
+            log.info(f"Таблица '{table}' проверена успешно.")
+        except psycopg2.Error as e:
+            log.error(f"Ошибка при проверке таблицы '{table}': {e}")
+            # Можно raise e или просто продолжить
+            
 def create_user(telegram_id: int, username: str = None):
     """
     Создаем запись пользователя (с trial_start, trial_end, subscription_end = NULL, ...)
