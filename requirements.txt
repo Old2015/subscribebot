@@ -1,0 +1,9 @@
+aiogram==2.25.1
+python-dotenv==0.21.0
+psycopg2==2.9.5
+qrcode==7.3.1
+Pillow==9.2.0     # qrcode требует PIL
+apscheduler==3.9.1
+tronpy==0.2.5     # примерная версия
+# supabase-py (если захотите использовать вместо psycopg2)
+# supabase-py==0.0.6
