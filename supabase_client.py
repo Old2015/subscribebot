@@ -29,6 +29,24 @@ def check_db_structure():
         except psycopg2.Error as e:
             log.error(f"Ошибка проверки таблицы '{t}': {e}")
 
+def create_user_with_custom_trial(telegram_id: int, username: str, trial_end: datetime):
+    """
+    Создаём пользователя с trial_end = заданная дата/время.
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (telegram_id, username, trial_end, created_at)
+                VALUES (%s, %s, %s, NOW())
+                RETURNING *
+            """, (telegram_id, username, trial_end))
+            row = cur.fetchone()
+            conn.commit()
+            if row:
+                cols = [desc[0] for desc in cur.description]
+                return dict(zip(cols, row))
+    return None
+
 def get_user_by_telegram_id(telegram_id: int):
     """
     Ищем пользователя в таблице 'users' по полю telegram_id.

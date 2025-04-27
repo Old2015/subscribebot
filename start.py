@@ -3,18 +3,21 @@ from aiogram.filters import Command
 import logging
 import supabase_client
 import config
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 start_router = Router()
 log = logging.getLogger(__name__)
 
-# Reply-клавиатура: две кнопки "Статус подписки", "Оформить подписку"
+# Клавиатура (пример, 3 кнопки)
 main_menu = types.ReplyKeyboardMarkup(
     keyboard=[
         [
             types.KeyboardButton(text="Статус подписки"),
             types.KeyboardButton(text="Оформить подписку"),
+        ],
+        [
+            types.KeyboardButton(text="Старт")
         ]
     ],
     resize_keyboard=True
@@ -27,142 +30,89 @@ async def cmd_start(message: types.Message):
 
     user = supabase_client.get_user_by_telegram_id(telegram_id)
     if not user:
-        # Если пользователя нет в БД -> создаём
-        new_user = supabase_client.create_user_with_trial(
+        # Новый пользователь
+        now = datetime.now()
+        # Проверяем глобальную дату
+        if config.GLOBAL_END_DATE:
+            # Если (сегодня) < GLOBAL_END_DATE
+            if now.date() < config.GLOBAL_END_DATE:
+                # trial_end = 1 июня 2025 00:00
+                trial_end_datetime = datetime(config.GLOBAL_END_DATE.year,
+                                              config.GLOBAL_END_DATE.month,
+                                              config.GLOBAL_END_DATE.day, 0, 0)
+            else:
+                # Иначе обычный trial N дней
+                trial_end_datetime = now + timedelta(days=config.FREE_TRIAL_DAYS)
+        else:
+            # Если вообще не задано, всё по FREE_TRIAL_DAYS
+            trial_end_datetime = now + timedelta(days=config.FREE_TRIAL_DAYS)
+
+        # Создаём пользователя
+        new_user = supabase_client.create_user_with_custom_trial(
             telegram_id=telegram_id,
             username=username,
-            trial_days=config.FREE_TRIAL_DAYS
+            trial_end=trial_end_datetime
         )
-        log.info(f"Created new user with trial: {new_user}")
+        log.info(f"Created new user with trial_end={trial_end_datetime}")
 
-        # Сначала unban – чтобы, если он был забанен ранее, мог заново войти
-        try:
-            await config.bot.unban_chat_member(
-                chat_id=config.PRIVATE_GROUP_ID,
-                user_id=telegram_id
-            )
-        except Exception as e:
-            log.error(f"Error unbanning user {telegram_id}: {e}")
-
-        # Генерируем пригласительную ссылку
+        # Генерируем invite link / unban
         try:
             invite_link = await config.bot.create_chat_invite_link(
                 chat_id=config.PRIVATE_GROUP_ID,
-                name="Trial Access",
-                expire_date=None,
-                member_limit=None
+                name="Trial Access"
             )
-
-            welcome_text = (
-                "Добро пожаловать в приватную торговую группу!\n"
-                "В режиме реального времени публикуется каждая сделка "
-                "профессионального трейдера Анонимуса: лимитные и маркет-ордера, "
-                "TP/SL, частичное и полное закрытие позиций.\n\n"
-                f"Вам предоставлен и активирован тестовый доступ в торговую группу {config.FREE_TRIAL_DAYS} дня(ей).\n\n"
-                "По истечению тестового периода вы можете оформить подписку, "
-                "стоимость 100 USDT в месяц.\n\n"
-                f"Чтобы войти в группу, перейдите по ссылке:\n{invite_link.invite_link}"
+            text = (
+                "Добро пожаловать!\n"
+                f"Тестовый период действует до {trial_end_datetime.strftime('%d.%m.%Y')}.\n"
+                "Если оплатите подписку до этой даты, старт подписки будет с этой же даты.\n"
+                "Ссылка для входа в группу:\n"
+                f"{invite_link.invite_link}"
             )
-
-            await message.answer(
-                text=welcome_text,
-                reply_markup=main_menu
-            )
-
-            # Уведомление админам
-            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            admin_text = (
-                f"[{now_str}] Новый пользователь!\n"
-                f"Username: {username}\n"
-                f"TelegramID: {telegram_id}\n"
-                f"Оформлен тестовый доступ на {config.FREE_TRIAL_DAYS} дн."
-            )
-            await config.bot.send_message(
-                chat_id=config.ADMIN_CHAT_ID,
-                text=admin_text
-            )
+            await message.answer(text, reply_markup=main_menu)
         except Exception as e:
-            log.error(f"Error creating invite link or notifying user {telegram_id}: {e}")
+            log.error(f"Failed to create invite link: {e}")
             await message.answer(
-                "Вы добавлены в базу (trial), но не удалось создать пригласительную ссылку.\n"
-                "Свяжитесь с администратором.",
+                "Вы добавлены в базу, но не получилось создать ссылку.\n"
+                "Свяжитесь с админом.",
                 reply_markup=main_menu
             )
 
     else:
-        # Если пользователь уже есть -> проверяем trial_end
+        # Уже есть пользователь
         trial_end: Optional[datetime] = user.get("trial_end")
         if not trial_end:
-            # Нет trial_end => триал не выдавался или истёк
-            log.info(f"User {telegram_id} found, trial_end is None.")
-            await _remove_from_group_if_in(
-                telegram_id,
-                "Ваш тестовый период закончен. Оформите подписку."
-            )
-            await message.answer("У вас нет активного триала. Оформите подписку.", reply_markup=main_menu)
+            # trial_end = NULL => trial нет
+            # удаляем из группы?
+            await _remove_from_group_if_in(telegram_id, "У вас нет активного триала.")
+            await message.answer("Ваш триал не активен, оформите подписку.", reply_markup=main_menu)
             return
 
         now = datetime.now()
         if trial_end > now:
-            # Триал активен
+            # Trial is active
             days_left = (trial_end - now).days
-            log.info(f"User {telegram_id} trial is active: {days_left} days left.")
-
-            # unban, чтобы гарантированно мог зайти
-            try:
-                await config.bot.unban_chat_member(
-                    chat_id=config.PRIVATE_GROUP_ID,
-                    user_id=telegram_id
-                )
-            except Exception as e:
-                log.error(f"Error unbanning user {telegram_id}: {e}")
-
-            # Генерируем новую ссылку (при желании)
-            try:
-                invite_link = await config.bot.create_chat_invite_link(
-                    chat_id=config.PRIVATE_GROUP_ID,
-                    name="Trial Re-Access",
-                )
-                text = (
-                    f"У вас ещё активен триал, осталось ~{days_left} дн.\n"
-                    f"Если не в группе, перейдите по ссылке:\n{invite_link.invite_link}"
-                )
-                await message.answer(text, reply_markup=main_menu)
-            except Exception as e:
-                await message.answer(
-                    f"Триал активен (осталось ~{days_left} дн). "
-                    "Но не получилось создать ссылку, свяжитесь с админом.",
-                    reply_markup=main_menu
-                )
-                log.error(f"Error creating new link for existing user {telegram_id}: {e}")
-
-        else:
-            # trial_end < now => истёк
-            log.info(f"User {telegram_id} trial expired.")
-            await _remove_from_group_if_in(
-                telegram_id,
-                "Триал закончился! Для доступа оформите подписку."
-            )
             await message.answer(
-                "Ваш триал закончился, нужно оформить подписку.",
+                f"Триал ещё активен, осталось {days_left} дней.\n"
+                "Чтобы зайти в группу, используйте /start ещё раз для ссылки (при необходимости).",
                 reply_markup=main_menu
             )
+        else:
+            # trial_end < now => триал истёк
+            await _remove_from_group_if_in(
+                telegram_id,
+                "Ваш тестовый период закончился, оформите подписку."
+            )
+            await message.answer("Триал закончился, оформите подписку.", reply_markup=main_menu)
 
-
-async def _remove_from_group_if_in(user_id: int, reason_text: str = ""):
-    """
-    Удаляем пользователя из приватной группы (ban),
-    отправляем ему reason_text (при желании).
-    """
+async def _remove_from_group_if_in(user_id: int, reason: str):
     try:
         await config.bot.ban_chat_member(
             chat_id=config.PRIVATE_GROUP_ID,
             user_id=user_id
         )
-        if reason_text:
-            await config.bot.send_message(
-                chat_id=user_id,
-                text=reason_text
-            )
+        await config.bot.send_message(
+            chat_id=user_id,
+            text=reason
+        )
     except Exception as e:
         log.error(f"Error removing user {user_id} from group: {e}")
