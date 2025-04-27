@@ -129,7 +129,7 @@ async def cmd_status(message: types.Message):
     if trial_end:
         if trial_end > now:
             dleft = (trial_end - now).days
-            lines.append(f"Бесплатный доступ до {trial_end.strftime('%d.%m.%Y')} (~{dleft} дн.)")
+            lines.append(f"Бесплатный доступ до {trial_end.strftime('%d.%m.%Y')} ({dleft} дн.)")
         else:
             lines.append("Период бесплатного доступа завершен.")
     else:
@@ -191,8 +191,8 @@ async def cmd_subscribe(message: types.Message):
         if diff.total_seconds() < 24 * 3600:
             hours_left = 24 - diff.total_seconds() // 3600
             await message.answer(
-                f"Адрес для оплаты уже выдан менее 24 ч назад.\n"
-                f"Осталось ~{hours_left} часов, прежде чем запросить новый.\n"
+                f"Адрес для оплаты был выдан менее 24ч назад.\n"
+                f"Осталось {hours_left}ч, прежде чем Вы можете запросить новый.\n"
                 f"Ваш текущий актуальный адрес для оплаты:\n{deposit_address}",
                 reply_markup=main_menu
             )

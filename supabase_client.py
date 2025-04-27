@@ -180,3 +180,140 @@ def get_payment_by_id(payment_id: int):
                 cols = [desc[0] for desc in cur.description]
                 return dict(zip(cols, row))
     return None
+
+def get_pending_deposits():
+    """
+    Возвращает всех пользователей, у которых есть deposit_address != null,
+    т.е. ожидаем оплату. (Фильтровать по 24ч будем в poll_trc20_transactions).
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, telegram_id, deposit_address, deposit_created_at, 
+                       subscription_end, trial_end
+                  FROM users
+                 WHERE deposit_address IS NOT NULL
+                   AND deposit_address <> ''
+            """)
+            rows = cur.fetchall()
+            cols = [desc[0] for desc in cur.description]
+            result = [dict(zip(cols, r)) for r in rows]
+            return result
+
+def reset_deposit_address(user_id: int):
+    """
+    Сбросить поле deposit_address, deposit_created_at, 
+    если оплата не поступила или уже поступила, 
+    чтобы user мог запросить новый адрес.
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE users
+                   SET deposit_address = NULL,
+                       deposit_created_at = NULL
+                 WHERE id = %s
+            """, (user_id,))
+            conn.commit()
+
+def create_payment(user_id: int, txhash: str, amount_usdt: float, days_added: int):
+    """
+    Создаём запись в payments.
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO payments(user_id, txhash, amount_usdt, days_added, 
+                                     paid_at, created_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+            """, (user_id, txhash, amount_usdt, days_added))
+            conn.commit()
+
+def update_payment_days(user_id: int, amount_usdt: float, days_added: int):
+    """
+    Обновляем days_added в записи payments,
+    если вы хотите задним числом пересчитать.
+    Или можно было сразу при create_payment(...).
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            # Предположим, найдём последнюю оплату c таким amount_usdt.
+            cur.execute("""
+                UPDATE payments
+                   SET days_added = %s
+                 WHERE user_id = %s
+                   AND amount_usdt = %s
+                 ORDER BY id DESC
+                 LIMIT 1
+                RETURNING id
+            """, (days_added, user_id, amount_usdt))
+            row = cur.fetchone()
+            conn.commit()
+
+def apply_subscription_extension(user_id: int, days_to_add: int):
+    """
+    Продляем/назначаем подписку. 
+    Учитываем trial_end vs subscription_end:
+      - Если subscription_end > now => subscription_end += days_to_add
+      - Иначе => subscription_end = now + days_to_add
+      - Но если trial_end > now => подписка может начаться после trial_end
+    """
+    now = datetime.now()
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT trial_end, subscription_start, subscription_end
+                  FROM users
+                 WHERE id=%s
+            """, (user_id,))
+            row = cur.fetchone()
+            if not row:
+                return
+            trial_end, sub_start, sub_end = row
+
+            # Вычислим start_point
+            if trial_end and trial_end > now:
+                start_point = trial_end
+            else:
+                # Если sub_end еще активен => начинаем с sub_end
+                if sub_end and sub_end > now:
+                    start_point = sub_end
+                else:
+                    start_point = now
+
+            new_sub_start = start_point if sub_start is None or sub_start < start_point else sub_start
+            new_sub_end = start_point + timedelta(days=days_to_add)
+
+            cur.execute("""
+                UPDATE users
+                   SET subscription_start = %s,
+                       subscription_end   = %s
+                 WHERE id = %s
+            """, (new_sub_start, new_sub_end, user_id))
+            conn.commit()
+
+def get_user_sub_info(user_id: int) -> str:
+    """
+    Пример: вернём строку "Ваша подписка до 12.06.2025 (ещё 45 дней)."
+    Если нет sub_end, "Подписка не оформлена" 
+    """
+    now = datetime.now()
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT subscription_start, subscription_end
+                  FROM users
+                 WHERE id=%s
+            """, (user_id,))
+            row = cur.fetchone()
+            if not row:
+                return "Подписка не найдена."
+            sstart, send = row
+            if not send:
+                return "Подписка не оформлена."
+
+            if send > now:
+                dleft = (send - now).days
+                return f"Ваша подписка действует до {send.strftime('%d.%m.%Y')} (~{dleft} дн)."
+            else:
+                return "Подписка истекла."

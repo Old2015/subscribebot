@@ -15,7 +15,7 @@ from config import CHECK_INTERVAL_MIN, DAILY_ANALYSIS_TIME
 
 async def scheduled_tron_poll():
     """Вызывается каждые CHECK_INTERVAL_MIN минут для опроса сети Tron."""
-    await poll_trc20_transactions()
+    await poll_trc20_transactions(bot)
 
 async def scheduled_daily_job():
     """Вызывается в DAILY_ANALYSIS_TIME для ежедневных задач (чистим триал, шлём отчёт)."""
