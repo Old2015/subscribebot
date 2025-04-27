@@ -8,15 +8,12 @@ from config import TRON_MASTER_SEED
 log = logging.getLogger(__name__)
 
 
-def poll_trc20_transactions():
-    """
-    Заглушка: вызывается планировщиком (main.py) каждые N минут,
-    чтобы проверить поступление USDT на ваши адреса.
-    Реализация будет позже.
-    """
-    log.debug("poll_trc20_transactions: not yet implemented.")
+async def poll_trc20_transactions():
+    log.debug("poll_trc20_transactions placeholder is async now")
+    # ... в будущем можно реально обращаться к API Tron
+    return
 
-    
+
 def create_qr_code(data: str) -> str:
     """
     Генерирует PNG-файл с QR-кодом. Возвращает путь к файлу.
