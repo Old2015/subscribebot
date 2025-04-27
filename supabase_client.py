@@ -29,7 +29,26 @@ def check_db_structure():
         except psycopg2.Error as e:
             log.error(f"Ошибка проверки таблицы '{t}': {e}")
 
-def create_user_with_custom_trial(telegram_id: int, username: str, trial_end: datetime):
+def increment_deposit_index(user_id: int):
+    """
+    Увеличить deposit_index на 1 и вернуть новое значение.
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE users
+                   SET deposit_index = deposit_index + 1
+                 WHERE id = %s
+                 RETURNING deposit_index
+            """, (user_id,))
+            row = cur.fetchone()
+            conn.commit()
+            if row:
+                return row[0]
+    return 0
+
+
+def create_user_custom_trial(telegram_id: int, username: str, trial_end: datetime):
     """
     Создаём пользователя с trial_end = заданная дата/время.
     """

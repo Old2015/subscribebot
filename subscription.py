@@ -1,15 +1,11 @@
-from aiogram import Router, types
-import logging
-import config
-import supabase_client
+import time
 from datetime import datetime
+import logging
 import os
 
-# Импортируем, если нужно, логику из start.py
-# (Теперь "Начать заново" не вызывает cmd_start, 
-#  а реализуем отдельную логику здесь)
-# from start import cmd_start
-
+from aiogram import Router, types
+import config
+import supabase_client
 from tron_service import create_qr_code, generate_new_tron_address
 
 subscription_router = Router()
@@ -33,25 +29,24 @@ main_menu = types.ReplyKeyboardMarkup(
 async def cmd_restart(message: types.Message):
     """
     Пользователь нажал «Начать заново».
-    1) unban в группе (на всякий случай)
-    2) Проверяем trial_end, subscription_end
-    3) Если есть право на доступ (trial или подписка активны), создаём одноразовую ссылку member_limit=1
-    4) Отправляем пользователю
+    1) unban (на случай, если был удалён)
+    2) Проверяем, есть ли trial_end > now или subscription_end > now
+    3) Если есть — генерируем одноразовую ссылку (24 ч, member_limit=1)
     """
     telegram_id = message.from_user.id
     log.info(f"User {telegram_id} pressed 'Начать заново'")
 
-    # 1) unban (на случай, если был удалён)
+    # unban
     try:
         await config.bot.unban_chat_member(
             chat_id=config.PRIVATE_GROUP_ID,
-            user_id=telegram_id
+            user_id=telegram_id,
+            only_if_banned=False
         )
         log.info(f"User {telegram_id} unbanned successfully")
     except Exception as e:
-        log.warning(f"Failed to unban user {telegram_id}. Possibly not banned. Err: {e}")
+        log.warning(f"Failed to unban user {telegram_id}. Possibly not banned? {e}")
 
-    # 2) Проверяем, есть ли у пользователя trial/subscription (ещё действующие)
     user = supabase_client.get_user_by_telegram_id(telegram_id)
     if not user:
         await message.answer(
@@ -62,53 +57,43 @@ async def cmd_restart(message: types.Message):
 
     now = datetime.now()
     trial_end = user.get("trial_end")
-    sub_start = user.get("subscription_start")     # если используете
+    sub_start = user.get("subscription_start")
     sub_end = user.get("subscription_end")
 
-    # Флаг: есть ли право на доступ
     has_access = False
 
-    # Проверим триал
+    # Проверим trial
     if trial_end and trial_end > now:
         has_access = True
 
     # Проверим подписку
     if sub_end and sub_end > now:
-        # если есть sub_start, смотрим начала ли подписка (sub_start <= now)
         if sub_start:
             if sub_start <= now:
                 has_access = True
-            else:
-                # Подписка ещё не началась, 
-                # но, возможно, хотим уже пускать? 
-                # Решите сами, хотим ли давать ссылку?
-                # has_access = False
-                pass
         else:
-            # Нет sub_start => подписка активна
             has_access = True
 
     if not has_access:
-        # Нет действующего триала, нет активной подписки
-        # => не даём ссылку
         await message.answer(
-            "У вас сейчас нет доступа (триал истёк, подписка не оформлена).",
+            "У вас сейчас нет доступа (Период бесплатного доступа истёк или подписка не оформлена).",
             reply_markup=main_menu
         )
         return
 
-    # 3) Раз есть доступ, генерируем одноразовую ссылку
+    # Генерируем одноразовую ссылку, срок 24 ч
+    expire_timestamp = int(time.time()) + 24 * 3600
     try:
         invite_link = await config.bot.create_chat_invite_link(
             chat_id=config.PRIVATE_GROUP_ID,
             name="Single-Use Link",
-            member_limit=1,  # одноразовая
-            expire_date=None
+            member_limit=1,
+            expire_date=expire_timestamp
         )
         text = (
-            "Ваша новая одноразовая ссылка для входа в группу:\n"
+            "Ваша новая одноразовая ссылка для входа в группу (действует 24 ч, один вход):\n"
             f"{invite_link.invite_link}\n\n"
-            "Ссылка утратит силу, как только кто-то ею воспользуется (или по истечении срока)."
+            "Если понадобится ещё одна ссылка, нажмите «Начать заново»."
         )
         await message.answer(text, reply_markup=main_menu)
     except Exception as e:
@@ -120,13 +105,17 @@ async def cmd_restart(message: types.Message):
 
 @subscription_router.message(lambda msg: msg.text == "Статус подписки")
 async def cmd_status(message: types.Message):
-    # ... (как прежде) выводим trial_end / subscription_start / subscription_end
-    # 
-    # Пример упрощённого кода:
+    """
+    Проверяем trial_end, subscription_start, subscription_end
+    и сообщаем о текущем состоянии пользователя.
+    """
     log.info(f"User {message.from_user.id} pressed 'Статус подписки'")
     user = supabase_client.get_user_by_telegram_id(message.from_user.id)
     if not user:
-        await message.answer("Вы не зарегистрированы. Нажмите «Начать заново».", reply_markup=main_menu)
+        await message.answer(
+            "Вы не зарегистрированы. Нажмите «Начать заново».",
+            reply_markup=main_menu
+        )
         return
 
     now = datetime.now()
@@ -136,34 +125,34 @@ async def cmd_status(message: types.Message):
 
     lines = []
 
-    # trial
+    # Trial
     if trial_end:
         if trial_end > now:
             dleft = (trial_end - now).days
-            lines.append(f"Триал до {trial_end.strftime('%d.%m.%Y')} (~{dleft} дн.)")
+            lines.append(f"Бесплатный доступ до {trial_end.strftime('%d.%m.%Y')} (~{dleft} дн.)")
         else:
-            lines.append("Триал истёк.")
+            lines.append("Период бесплатного доступа завершен.")
     else:
-        lines.append("Триал не оформлен.")
+        lines.append("Бесплатный доступ не оформлен.")
 
-    # subscription
+    # Subscription
     if sub_end:
         if sub_start and sub_start > now:
-            # подписка будущая
-            days_wait = (sub_start - now).days
-            lines.append(f"Подписка начнётся {sub_start.strftime('%d.%m.%Y')} (через ~{days_wait} дн.)")
+            dwait = (sub_start - now).days
+            lines.append(
+                f"Подписка начнётся {sub_start.strftime('%d.%m.%Y')} (через ~{dwait} дн.)"
+            )
         elif sub_start and sub_start <= now < sub_end:
             dleft = (sub_end - now).days
-            lines.append(f"Подписка активна до {sub_end.strftime('%d.%m.%Y')} (~{dleft} дн.)")
+            lines.append(
+                f"Подписка активна до {sub_end.strftime('%d.%m.%Y')} (~{dleft} дн.)"
+            )
         elif sub_end < now:
             lines.append("Подписка истекла.")
         else:
-            # sub_start нет, а sub_end > now => активна 
-            if sub_end > now:
-                dleft = (sub_end - now).days
-                lines.append(f"Подписка до {sub_end.strftime('%d.%m.%Y')} (~{dleft} дн.)")
-            else:
-                lines.append("Подписка истекла.")
+            # sub_start нет, sub_end > now => подписка активна
+            dleft = (sub_end - now).days
+            lines.append(f"Подписка до {sub_end.strftime('%d.%m.%Y')} (~{dleft} дн.)")
     else:
         lines.append("Подписка не оформлена.")
 
@@ -173,15 +162,18 @@ async def cmd_status(message: types.Message):
 @subscription_router.message(lambda msg: msg.text == "Оформить подписку")
 async def cmd_subscribe(message: types.Message):
     """
-    Пользователь нажимает «Оформить подписку».
-    1) Проверяем, не выдавали ли мы адрес <24 ч назад
-    2) Если выдавали → сообщаем, сколько осталось
-    3) Если нет → генерируем новый HD-адрес (по user['id']), сохраняем, отправляем QR
+    1) Проверяем, выдавали ли адрес <24 ч назад
+    2) Если можно — генерируем HD-адрес, сохраняем
+    3) Отправляем 4 сообщения:
+       (1) Фото (QR) + "Для оформления подписки..."
+       (2) Адрес отдельно
+       (3) "Этот адрес действует 24 часа..."
+       (4) "Внимание: только сеть TRC20!"
     """
     telegram_id = message.from_user.id
     log.info(f"User {telegram_id} pressed 'Оформить подписку'")
 
-    user = supabase_client.get_user_by_telegram_id(telegram_id)
+    user = supabase_client.get_user_by_telegram_id(message.from_user.id)
     if not user:
         await message.answer(
             "Вы не зарегистрированы. Введите /start для регистрации.",
@@ -190,74 +182,84 @@ async def cmd_subscribe(message: types.Message):
         return
 
     deposit_address = user.get("deposit_address")
-    deposit_created_at = user.get("deposit_created_at")  # datetime or None
+    deposit_created_at = user.get("deposit_created_at")
+    now = datetime.now()
 
     # Проверка 24 часов
     if deposit_address and deposit_created_at:
-        now = datetime.now()
         diff = now - deposit_created_at
         if diff.total_seconds() < 24 * 3600:
             hours_left = 24 - diff.total_seconds() // 3600
             await message.answer(
-                f"Адрес уже выдан менее 24 ч назад.\n"
-                f"Осталось примерно {hours_left} часов, прежде чем сможете запросить новый.\n"
-                f"Ваш текущий адрес:\n{deposit_address}",
+                f"Адрес для оплаты уже выдан менее 24 ч назад.\n"
+                f"Осталось ~{hours_left} часов, прежде чем запросить новый.\n"
+                f"Ваш текущий актуальный адрес для оплаты:\n{deposit_address}",
                 reply_markup=main_menu
             )
             return
         else:
-            # Сбрасываем старый адрес
             supabase_client.reset_deposit_address(user['id'])
-            deposit_address = None
 
-    # Генерируем новый HD-адрес
-    user_id = user["id"]
-    tron_data = generate_new_tron_address(index=user_id)
+    # Генерация нового адреса (если используете счётчик):
+    # new_index = supabase_client.increment_deposit_index(user["id"])
+    # tron_data = generate_new_tron_address(index=new_index)
+    # Или без счётчика:
+    tron_data = generate_new_tron_address(index=user['id'])
     address = tron_data["address"]
-    # private_key_hex = tron_data["private_key"] # мы не храним
-
     if not address:
         await message.answer(
-            "Ошибка: не удалось сгенерировать Tron-адрес. Свяжитесь с администратором.",
+            "Ошибка: не удалось сгенерировать Tron-адрес. Свяжитесь с админом.",
             reply_markup=main_menu
         )
         return
 
-    # Сохраняем deposit_address
-    supabase_client.update_deposit_info(user_id, address)
-    # Обновляем время
-    supabase_client.update_deposit_created_at(user_id, datetime.now())
+    # Сохраняем
+    supabase_client.update_deposit_info(user['id'], address)
+    supabase_client.update_deposit_created_at(user['id'], now)
 
     # Генерируем QR
     qr_path = create_qr_code(address)
-
-    # Берём сумму из .env (config.SUBSCRIPTION_PRICE_USDT)
     usdt_amount = config.SUBSCRIPTION_PRICE_USDT
 
-    text = (
-        f"Для оформления подписки на 30 дней оплатите {usdt_amount} USDT (TRC20) на адрес:\n"
-        f"`{address}`\n\n"
-        "Этот адрес действителен 24 часа. После оплаты бот автоматически подтвердит вашу подписку."
+    # Подготавливаем 4 части сообщения
+    msg_intro = (
+        f"Для оформления подписки на 30 дней оплатите {usdt_amount} USDT (TRC20) на адрес:"
+    )
+    msg_address = f"`{address}`"  # удобно копировать
+    msg_after = (
+        "Этот адрес действует 24 часа. После оплаты бот автоматически подтвердит вашу подписку."
+    )
+    msg_network = (
+        "Внимание: оплата принимается **только** в сети TRC20.\n"
+        "Если отправите в другой сети, средства не будут зачислены!"
     )
 
     if qr_path and os.path.exists(qr_path):
+        # 1) QR + intro
         try:
             await message.answer_photo(
                 photo=types.FSInputFile(qr_path),
-                caption=text,
+                caption=msg_intro,
                 parse_mode="Markdown",
                 reply_markup=main_menu
             )
+            # 2) Адрес отдельно
+            await message.answer(msg_address, parse_mode="Markdown")
+            # 3) Условия
+            await message.answer(msg_after)
+            # 4) Предупреждение сети
+            await message.answer(msg_network, parse_mode="Markdown")
+
         except Exception as e:
             log.error(f"Error sending QR photo: {e}")
-            await message.answer(
-                f"{text}\n(Ошибка отправки QR. Вот адрес: `{address}`)",
-                parse_mode="Markdown",
-                reply_markup=main_menu
-            )
+            # Если фото не отправилось, всё равно отправим разбивку без фото
+            await message.answer(msg_intro, reply_markup=main_menu)
+            await message.answer(msg_address, parse_mode="Markdown")
+            await message.answer(msg_after)
+            await message.answer(msg_network, parse_mode="Markdown")
     else:
-        await message.answer(
-            f"{text}\n(Не удалось сгенерировать QR)",
-            parse_mode="Markdown",
-            reply_markup=main_menu
-        )
+        # Без QR
+        await message.answer(msg_intro, reply_markup=main_menu)
+        await message.answer(msg_address, parse_mode="Markdown")
+        await message.answer("(Не удалось сгенерировать QR)\n" + msg_after)
+        await message.answer(msg_network, parse_mode="Markdown")

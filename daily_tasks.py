@@ -36,7 +36,7 @@ async def run_daily_tasks(bot: Bot):
             try:
                 await bot.send_message(
                     chat_id=tg_id,
-                    text=f"У вас ещё активен триал, осталось {days_left} дней."
+                    text=f"У вас ещё активен тестовый доступ, осталось {days_left} дней."
                 )
             except Exception as e:
                 log.error(f"Error sending trial info to user {tg_id}: {e}")
@@ -50,7 +50,7 @@ async def run_daily_tasks(bot: Bot):
                 )
                 await bot.send_message(
                     tg_id,
-                    text="Триал закончился, у вас нет подписки. Вы удалены из группы."
+                    text="Тестовый доступ закончился, у вас нет подписки. Вы удалены из группы."
                 )
             except Exception as e:
                 log.error(f"Error removing user {tg_id}: {e}")
