@@ -5,11 +5,11 @@ from datetime import datetime
 import tempfile
 import qrcode
 
-# Важно: Импорт Tron, HttpProvider из tronpy
+# ВАЖНО: Импорт нужного провайдера
 from tronpy import Tron
 from tronpy.providers import HTTPProvider
+from tronpy.keys import to_base58check_address
 
-# Импорты из вашего проекта
 import config
 import supabase_client
 from aiogram import Bot
@@ -17,9 +17,16 @@ from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes, Bip44
 
 log = logging.getLogger(__name__)
 
-# Инициализируем TronPy-клиент через provider=HTTPProvider(...)
-# Для mainnet используем https://api.trongrid.io
-client = Tron(provider=HTTPProvider("https://api.trongrid.io"))
+# Создаём Tron-клиент с API-ключом(ами). 
+# Если у вас один ключ:
+#   api_keys=[config.TRON_API_KEY]
+# Если несколько ключей, можно добавить: api_keys=["key1","key2"]
+provider = HTTPProvider(
+    "https://api.trongrid.io",
+    api_keys=[config.TRON_API_KEY] if config.TRON_API_KEY else []
+)
+
+client = Tron(provider=provider)
 
 def check_trc20_balance_or_transaction(address: str) -> float:
     """
@@ -97,8 +104,7 @@ async def poll_trc20_transactions(bot: Bot):
             )
 
             # Сколько дней положено? 
-            # 100 USDT => config.DAYS_FOR_100_USDT (напр. 30)
-            ratio = config.DAYS_FOR_100_USDT / config.SUBSCRIPTION_PRICE_USDT
+            ratio = config.DAYS_FOR_100_USDT / 100.0
             days_float = paid_amount * ratio
             days_rounded = math.ceil(days_float)
 
