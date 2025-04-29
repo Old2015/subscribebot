@@ -3,15 +3,12 @@ import asyncio
 import logging
 from aiogram import Dispatcher
 import logger_config
-from config import bot
+from config import bot, CHECK_INTERVAL_MIN, DAILY_ANALYSIS_TIME
 import supabase_client
-from daily_tasks import run_daily_tasks
-from admin_report import send_admin_report
 from start import start_router
 from subscription import subscription_router
-from tron_service import poll_trc20_transactions
+from tron_service import poll_trc20_transactions, print_master_balance_at_start
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from config import CHECK_INTERVAL_MIN, DAILY_ANALYSIS_TIME
 
 async def scheduled_tron_poll():
     """Вызывается каждые CHECK_INTERVAL_MIN минут для опроса сети Tron."""
@@ -19,6 +16,8 @@ async def scheduled_tron_poll():
 
 async def scheduled_daily_job():
     """Вызывается в DAILY_ANALYSIS_TIME для ежедневных задач (чистим триал, шлём отчёт)."""
+    from daily_tasks import run_daily_tasks
+    from admin_report import send_admin_report
     await run_daily_tasks(bot)
     await send_admin_report(bot)
 
@@ -36,6 +35,9 @@ async def main():
     # Подключаем роутеры
     dp.include_router(start_router)
     dp.include_router(subscription_router)
+
+    # *** НОВОЕ: печатаем баланс мастер-адреса при старте ***
+    await print_master_balance_at_start(bot)
 
     # 4) Поднимаем планировщик (APSсheduler)
     scheduler = AsyncIOScheduler()

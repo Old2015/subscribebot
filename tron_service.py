@@ -130,18 +130,24 @@ def sign_and_broadcast_usdt_transfer(ephem_privkey: str, from_addr: str, to_addr
 
 async def print_master_balance_at_start(bot: Bot):
     """
-    Вызовем при старте бота: вычисляем master address, печатаем (и шлём в ADMIN_CHAT_ID) баланс.
+    Вызывается при старте бота. 
+    1) Высчитываем (master_address, master_privkey).
+    2) Получаем баланс.
+    3) Пишем в лог, шлём в ADMIN_CHAT_ID.
     """
     master_addr, master_priv = derive_master_key_and_address()
     bal = get_usdt_balance(master_addr)
-    msg = f"Master Address: {master_addr}\nUSDT Balance: {bal}"
+    msg = (
+        f"Bot started.\n"
+        f"Master Address: {master_addr}\n"
+        f"USDT Balance on Master: {bal:.2f}"
+    )
     log.info(msg)
-    # Пошлём админу
-    try:
-        if config.ADMIN_CHAT_ID:
-            await bot.send_message(config.ADMIN_CHAT_ID, f"[BOT START] {msg}")
-    except Exception as e:
-        log.warning(f"Failed to notify admin about master balance: {e}")
+    if config.ADMIN_CHAT_ID:
+        try:
+            await bot.send_message(config.ADMIN_CHAT_ID, msg)
+        except Exception as e:
+            log.warning(f"Failed to notify admin about master balance: {e}")
 
 def create_temp_deposit_address(user_id: int):
     """
