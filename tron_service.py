@@ -320,6 +320,27 @@ def fund_address(master_priv: str, master_addr: str,
     log.info(f"Funding tx {br['txid']} ; +{sun/1e6:.2f} TRX -> {dest_addr}")
     return True
 
+
+# ────────────────────────────────────────────────────────────────
+# 11-bis.  Сообщаем баланс мастера при старте бота
+# ────────────────────────────────────────────────────────────────
+async def print_master_balance_at_start(bot: Bot):
+    master_addr, _ = derive_master()
+    usdt = get_usdt_balance(master_addr)
+    trx  = get_trx_balance(master_addr) / 1_000_000
+    msg  = (
+        f"Bot started ✅\n"
+        f"Master address: {master_addr}\n"
+        f"Balance: {usdt:.2f} USDT  |  {trx:.2f} TRX"
+    )
+    log.info(msg)
+    if getattr(config, "ADMIN_CHAT_ID", None):
+        try:
+            await bot.send_message(config.ADMIN_CHAT_ID, msg)
+        except Exception as e:
+            log.warning(f"Cannot notify admin: {e}")
+            
+
 def create_qr_code(data: str) -> str:
     img = qrcode.make(data)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
