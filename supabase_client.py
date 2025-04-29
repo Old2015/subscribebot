@@ -119,33 +119,44 @@ def update_deposit_info(user_id: int, address: str):
             """, (address, user_id))
             conn.commit()
 
-def update_deposit_created_at(user_id: int, created_at: datetime):
-    """
-    Обновляем время, когда был выдан адрес (deposit_created_at).
-    """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE users
-                   SET deposit_created_at = %s
-                 WHERE id = %s
-            """, (created_at, user_id))
-            conn.commit()
 
-def reset_deposit_address(user_id: int):
+
+def set_deposit_address_and_privkey(user_id: int, address: str, privkey: str):
     """
-    Сбрасываем поля deposit_address и deposit_created_at,
-    если нужно освободить/отключить старый адрес.
+    Сохраняем одноразовый адрес + приватник и время выдачи.
     """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE users
-                   SET deposit_address = NULL,
-                       deposit_created_at = NULL
-                 WHERE id = %s
-            """, (user_id,))
-            conn.commit()
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+               SET deposit_address     = %s,
+                   deposit_privkey     = %s,
+                   deposit_created_at  = NOW()
+             WHERE id = %s
+            """,
+            (address, privkey, user_id),
+        )
+        conn.commit()
+
+def reset_deposit_address_and_privkey(user_id: int):
+    """
+    Полностью очищаем адрес, ключ и дату выдачи — после оплаты/экспирации.
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+               SET deposit_address    = NULL,
+                   deposit_privkey    = NULL,
+                   deposit_created_at = NULL
+             WHERE id = %s
+            """,
+            (user_id,),
+        )
+        conn.commit()
+
+
+
 
 # Примеры функций для таблицы payments, если нужны:
 
@@ -181,40 +192,28 @@ def get_payment_by_id(payment_id: int):
                 return dict(zip(cols, row))
     return None
 
-def get_pending_deposits():
+def get_pending_deposits_with_privkey():
     """
-    Возвращает всех пользователей, у которых есть deposit_address != null,
-    т.е. ожидаем оплату. (Фильтровать по 24ч будем в poll_trc20_transactions).
+    Вернуть пользователей, у которых СУЩЕСТВУЕТ и адрес, и приватный ключ,
+    т.е. ожидаем поступления USDT.
     """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, telegram_id, deposit_address, deposit_created_at, 
-                       subscription_end, trial_end
-                  FROM users
-                 WHERE deposit_address IS NOT NULL
-                   AND deposit_address <> ''
-            """)
-            rows = cur.fetchall()
-            cols = [desc[0] for desc in cur.description]
-            result = [dict(zip(cols, r)) for r in rows]
-            return result
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, telegram_id, deposit_address, deposit_privkey,
+                   deposit_created_at
+              FROM users
+             WHERE deposit_address IS NOT NULL
+               AND deposit_privkey IS NOT NULL
+               AND deposit_address <> ''
+            """
+        )
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in rows]
+    
 
-def reset_deposit_address(user_id: int):
-    """
-    Сбросить поле deposit_address, deposit_created_at, 
-    если оплата не поступила или уже поступила, 
-    чтобы user мог запросить новый адрес.
-    """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE users
-                   SET deposit_address = NULL,
-                       deposit_created_at = NULL
-                 WHERE id = %s
-            """, (user_id,))
-            conn.commit()
+
 
 def create_payment(user_id: int, txhash: str, amount_usdt: float, days_added: int):
     """

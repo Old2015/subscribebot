@@ -54,18 +54,44 @@ def addr_b58_to_hex(addr_b58: str) -> str:
     return b58check_decode(addr_b58).hex()          # 41… hex
 
 # ───────────────────── ECDSA подпись ───────────────────────────
-def sign_tx(tx: dict, priv_hex: str, rec_id: int = 0) -> dict:
+def _pub_to_addr(pub_bytes: bytes) -> str:
+    keccak = hashlib.new("keccak256", pub_bytes[1:]).digest()
+    addr   = b"\x41" + keccak[-20:]
+    chk    = hashlib.sha256(hashlib.sha256(addr).digest()).digest()[:4]
+    return base58.b58encode(addr + chk).decode()
+
+def sign_tx(tx: dict, priv_hex: str) -> dict:
     """
-    Подписывает транзакцию Tron (tx["raw_data"]) приватным ключом.
-    В recovery-byte (v) ставим rec_id (0/1). Для большинства ключей 0 подходит.
+    Подписываем tx и подбираем корректный recovery-byte (0/1),
+    чтобы восстановленный адрес совпал с owner_address.
     """
     txid = bytes.fromhex(tx["txID"])
-    sk   = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex),
-                                        curve=ecdsa.SECP256k1)
-    sig  = sk.sign_digest(txid, sigencode=ecdsa.util.sigencode_string_canonize)
-    signed = tx.copy()
-    signed["signature"] = [(sig + bytes([rec_id])).hex()]
-    return signed
+
+    sk    = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex),
+                                         curve=ecdsa.SECP256k1)
+    # 64-байтная (r‖s) строка в canonical-форме
+    sig_rs = sk.sign_digest(
+        txid, sigencode=ecdsa.util.sigencode_string_canonize
+    )
+
+    for rec_id in (0, 1):
+        try:
+            vk = ecdsa.VerifyingKey.from_public_key_recovery(
+                sig_rs,
+                txid,
+                curve=ecdsa.SECP256k1,
+                sigdecode=ecdsa.util.sigdecode_string,
+            )[rec_id]
+            pub = b"\x04" + vk.to_string()
+            if _pub_to_addr(pub) == tx["raw_data"]["contract"][0]["parameter"]["value"]["owner_address"]:
+                full_sig = sig_rs + bytes([rec_id])
+                signed   = tx.copy()
+                signed["signature"] = [full_sig.hex()]
+                return signed
+        except Exception:
+            pass
+
+    raise ValueError("Could not produce valid signature (rec_id 0/1)")
 
 # ───────────────────── BIP-44 master из сид-фразы ──────────────
 def derive_master_key_and_address():
