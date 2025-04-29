@@ -1,461 +1,394 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-""" tron_service.py – работа с TRON без tronpy. """
-import os
-import math
-import time
-import base58
-import ecdsa
-import qrcode
-import hashlib
-import logging
-import requests
-import tempfile
-from datetime import datetime
-import config
-import supabase_client
-from aiogram import Bot
-from bip_utils import (Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes)
+"""
+tron_service.py — вся работа с TRON через TronGrid (без tronpy/TronWeb).
+"""
 
-try:
-    import sha3  # pip install pysha3
-    def keccak_256(data: bytes) -> bytes:
-        h = sha3.keccak_256()
-        h.update(data)
-        return h.digest()
-except ImportError:
-    try:
-        from Crypto.Hash import keccak  # pip install pycryptodome
-        def keccak_256(data: bytes) -> bytes:
-            return keccak.new(data=data, digest_bits=256).digest()
-    except Exception:
-        raise RuntimeError(
-            "Keccak-256 unavailable. `pip install pysha3` или `pip install pycryptodome`"
-        )
+import os, math, time, base64, logging, tempfile, requests, qrcode, base58, ecdsa, hashlib
+from datetime import datetime
+from typing import Tuple, Optional, Dict
+
+import config, supabase_client
+from aiogram import Bot
+from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
 
 log = logging.getLogger(__name__)
+
+# ────────────────────────────────────────────────────────────────
+# 1.  Константы / конфиг
+# ────────────────────────────────────────────────────────────────
 TRONGRID_API = "https://api.trongrid.io"
-TRON_API_KEY = config.TRON_API_KEY
-USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-ENERGY_MARKET = "TU2MJ5Veik1LRAgjeSzEdvmDYx7mefJZvd"  # JustLend DAO
-RESOURCE_ENERGY = 1
-HEADERS = {'TRON-PRO-API-KEY': TRON_API_KEY} if TRON_API_KEY else {}
+HEADERS      = {"TRON-PRO-API-KEY": config.TRON_API_KEY} if config.TRON_API_KEY else {}
 
-# ───────────────────── Base58 helpers ──────────────────────────
-B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-B58_INDEX = {c: i for i, c in enumerate(B58_ALPHABET)}
+USDT_CONTRACT  = config.TRC20_USDT_CONTRACT or "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+ENERGY_MARKET  = "TU2MJ5Veik1LRAgjeSzEdvmDYx7mefJZvd"          # JustLend DAO
+RESOURCE_ENERGY = 1                                            # 1 = Energy
 
-def b58check_decode(addr: str) -> bytes:
-    """T... → 0x41 + 20-byte + 4-checksum"""
+# Цена энергии (units per 1 TRX). Желательно хранить в .env
+ENERGY_PER_TRX = int(os.getenv("ENERGY_PER_TRX", "15000"))
+
+# ────────────────────────────────────────────────────────────────
+# 2.  Keccak-256 (без зависимости от openssl 3.0)
+# ────────────────────────────────────────────────────────────────
+try:
+    import sha3                  # pysha3
+    def keccak_256(data: bytes) -> bytes:
+        k = sha3.keccak_256(); k.update(data); return k.digest()
+except ImportError:
+    from Crypto.Hash import keccak    # pycryptodome
+    def keccak_256(data: bytes) -> bytes:
+        return keccak.new(data=data, digest_bits=256).digest()
+
+# ────────────────────────────────────────────────────────────────
+# 3.  Base58 utils
+# ────────────────────────────────────────────────────────────────
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B58_IDX = {c: i for i, c in enumerate(_B58)}
+
+def b58decode_check(addr: str) -> bytes:
     num = 0
-    for ch in addr:
-        num = num * 58 + B58_INDEX[ch]
+    for ch in addr: num = num*58 + _B58_IDX[ch]
     raw = num.to_bytes(25, "big")
-    data, checksum = raw[:-4], raw[-4:]
-    if hashlib.sha256(hashlib.sha256(data).digest()).digest()[:4] != checksum:
-        raise ValueError("Bad Base58 checksum")
-    return data  # 21 bytes
+    if hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]:
+        raise ValueError("Bad base58 checksum")
+    return raw[:-4]      # 21 bytes (0x41 + 20)
 
-def addr_b58_to_hex(addr_b58: str) -> str:
-    return b58check_decode(addr_b58).hex()  # 41… hex
+def b58_to_hex(addr: str) -> str:
+    return b58decode_check(addr).hex()           # 41…
 
-# ───────────────────── ECDSA подпись ───────────────────────────
-def _hex_to_b58(hex_addr: str) -> str:
+def hex_to_b58(hex_addr: str) -> str:
+    if hex_addr.startswith("0x"): hex_addr = hex_addr[2:]
     raw = bytes.fromhex(hex_addr)
     chk = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
     return base58.b58encode(raw + chk).decode()
 
-def _pub_to_b58(pub_uncompressed: bytes) -> str:
-    kh = keccak_256(pub_uncompressed[1:])
-    addr = b"\x41" + kh[-20:]
-    chk = hashlib.sha256(hashlib.sha256(addr).digest()).digest()[:4]
+def pub_to_b58(pub65: bytes) -> str:
+    h = keccak_256(pub65[1:])
+    addr = b"\x41" + h[-20:]
+    chk  = hashlib.sha256(hashlib.sha256(addr).digest()).digest()[:4]
     return base58.b58encode(addr + chk).decode()
 
-def sign_tx(tx: dict, priv_hex: str) -> dict:
+# ────────────────────────────────────────────────────────────────
+# 4.  Подпись транзакции Tron
+# ────────────────────────────────────────────────────────────────
+def sign_tx(tx: Dict, priv_hex: str) -> Dict:
     """
-    Подпись Tron-транзакции:
-    • r‖s в canonical-виде
-    • v (0/1) подбирается перебором — гарантированно верный
+    Подписывает Tron-транзакцию ECDSA-ключом и возвращает объект с полем signature[].
+    Бросает ValueError, если приватный ключ не соответствует owner_address.
     """
-    txid = bytes.fromhex(tx["txID"])  # SHA-256(raw_data)
-    # owner_address в raw_data может быть hex или Base58
+    if priv_hex.startswith("0x"): priv_hex = priv_hex[2:]
+    sk = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex), curve=ecdsa.SECP256k1)
+    pub_uncompressed = b"\x04" + sk.verifying_key.to_string()
+
+    txid = bytes.fromhex(tx["txID"])           # sha256(raw_data)
+
+    # 1. address владельца из raw_data
     owner_raw = tx["raw_data"]["contract"][0]["parameter"]["value"]["owner_address"]
-    owner_b58 = _hex_to_b58(owner_raw) if owner_raw.startswith("41") else owner_raw
-    sk = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex.zfill(64)), curve=ecdsa.SECP256k1)
+    if owner_raw.startswith("0x"): owner_raw = owner_raw[2:]
+    owner_b58 = hex_to_b58(owner_raw) if owner_raw.startswith("41") else owner_raw
+
+    # 2. быстрый check
+    if pub_to_b58(pub_uncompressed) != owner_b58:
+        raise ValueError("Приватный ключ не соответствует owner_address")
+
+    # 3. canonical r|s
     sig_rs = sk.sign_digest(txid, sigencode=ecdsa.util.sigencode_string_canonize)
-    # перебираем rec_id 0/1
-    for rec_id in (0, 1):
-        try:
-            vk = ecdsa.VerifyingKey.from_public_key_recovery(
-                sig_rs, txid, curve=ecdsa.SECP256k1, sigdecode=ecdsa.util.sigdecode_string
-            )[rec_id]
-            pub = b"\x04" + vk.to_string()
-            if _pub_to_b58(pub) == owner_b58:
-                full_sig = (sig_rs + bytes([rec_id])).hex()
-                signed = tx.copy()
-                signed["signature"] = [full_sig]
-                return signed
-        except Exception:
-            pass
-    raise ValueError("Cannot build valid signature for owner_address")
 
-# ───────────────────── BIP-44 master из сид-фразы ──────────────
-def derive_master_key_and_address():
-    """
-    BIP-44 путь m/44'/195'/0'/0/0 → (T… , priv_hex)
-    """
-    mnemonic = config.TRON_MASTER_SEED
-    seed_bytes = Bip39SeedGenerator(mnemonic).Generate()
-    bip44_m = Bip44.FromSeed(seed_bytes, Bip44Coins.TRON)
-    acct = bip44_m.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
-    priv_hex = acct.PrivateKey().Raw().ToHex()
-    pub_addr = acct.PublicKey().ToAddress()  # Base58 T…
-    return pub_addr, priv_hex
+    # 4. rec-id (последний бит Y-координаты pubkey)
+    rec_id = pub_uncompressed[-1] & 1
+    full_sig = (sig_rs + bytes([rec_id])).hex()
 
-# ───────────────────── TRC-20 баланс USDT ──────────────────────
-def get_usdt_balance(address_b58: str) -> float:
-    try:
-        addr_hex = addr_b58_to_hex(address_b58)[2:].rjust(64, "0")
-        payload = {
-            "owner_address": address_b58,
-            "contract_address": USDT_CONTRACT,
-            "function_selector": "balanceOf(address)",
-            "parameter": addr_hex,
-            "visible": True
-        }
-        r = requests.post(f"{TRONGRID_API}/wallet/triggerconstantcontract", json=payload, headers=HEADERS, timeout=10)
-        result_hex = r.json().get("constant_result", [None])[0]
-        if result_hex:
-            return int(result_hex, 16) / 1_000_000
-    except Exception as e:
-        log.warning(f"get_usdt_balance({address_b58}) failed: {e}")
-        return 0.0
-    return 0.0
+    signed = tx.copy()
+    signed["signature"] = [full_sig]
+    return signed
 
-# ───────────────────── Генерация одноразового адреса ───────────
-def generate_tron_keypair() -> dict:
-    priv = os.urandom(32)
-    sk = ecdsa.SigningKey.from_string(priv, curve=ecdsa.SECP256k1)
-    pub = sk.verifying_key.to_string("uncompressed")[1:]
-    keccak = keccak_256(pub)
-    addr_bytes = b"\x41" + keccak[-20:]
-    checksum = hashlib.sha256(hashlib.sha256(addr_bytes).digest()).digest()[:4]
-    b58_addr = base58.b58encode(addr_bytes + checksum).decode()
-    return {"address": b58_addr, "private_key": priv.hex()}
+# ────────────────────────────────────────────────────────────────
+# 5.  Master-адрес из сид-фразы
+# ────────────────────────────────────────────────────────────────
+def derive_master() -> Tuple[str, str]:
+    """
+    Возвращает (адрес T…, priv_hex) для пути m/44'/195'/0'/0/0
+    """
+    if hasattr(config, "TRON_MASTER_PRIVKEY") and config.TRON_MASTER_PRIVKEY:
+        priv_hex = config.TRON_MASTER_PRIVKEY.lstrip("0x")
+        sk = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex), curve=ecdsa.SECP256k1)
+        pub = b"\x04" + sk.verifying_key.to_string()
+        return pub_to_b58(pub), priv_hex
 
-def generate_ephemeral_address(*, index: int | None = None) -> dict:
-    """
-    Создать одноразовый адрес Tron.
-    Параметр index оставлен для совместимости; не используется.
-    """
-    return generate_tron_keypair()
+    seed = Bip39SeedGenerator(config.TRON_MASTER_SEED).Generate()
+    acc  = (Bip44.FromSeed(seed, Bip44Coins.TRON)
+                  .Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0))
+    return acc.PublicKey().ToAddress(), acc.PrivateKey().Raw().ToHex()
 
-# ───────────────────── Оценка TRX для N энергии ────────────────
-def calculate_trx_for_energy(energy_units: int) -> int:
-    """
-    Очень грубая оценка: 1 TRX (~1e6 Sun) ≈ 15 k Energy весной-2025.
-    Для 65 000 Energy → ~ 5 TRX.
-    Настройте под точный коэффициент сети!
-    """
-    trx = math.ceil(energy_units / 15000)
-    return trx * 1_000_000
-
-def account_exists(addr_b58: str) -> bool:
-    """
-    Возвращает True, если аккаунт уже активирован в сети Tron
-    (есть поле 'address' в ответе getaccount).
-    """
-    rsp = requests.post(
-        f"{TRONGRID_API}/wallet/getaccount",
-        json={"address": addr_b58, "visible": True},
-        headers=HEADERS, timeout=10
-    ).json()
-    return bool(rsp.get("address"))
-
-def get_trx_balance(addr_b58: str) -> int:  # возвращает в SUN
-    resp = requests.post(
-        f"{TRONGRID_API}/wallet/getaccount",
-        json={"address": addr_b58, "visible": True},
-        headers=HEADERS, timeout=10
-    ).json()
-    return resp.get("balance", 0)
-
-# ───────────────────── Аренда энергии (JustLend) ───────────────
-def rent_energy(master_privkey: str, master_addr: str, receiver_b58: str, energy_amount: int = 65000) -> bool:
-    trx_deposit = calculate_trx_for_energy(energy_amount)
-    if trx_deposit < 1_000_000:  # минимум 1 TRX
-        trx_deposit = 1_000_000
-    function_selector = "rentResource(address,uint256,uint256)"
-    receiver_param = addr_b58_to_hex(receiver_b58)[2:].ljust(64, "0")
-    amount_param = hex(trx_deposit)[2:].rjust(64, "0")
-    res_param = hex(RESOURCE_ENERGY)[2:].rjust(64, "0")
-    params = receiver_param + amount_param + res_param
-    trigger = {
-        "contract_address": ENERGY_MARKET,
-        "owner_address": master_addr,
-        "function_selector": function_selector,
-        "parameter": params,
-        "fee_limit": 100_000_000,  # 100 TRX
-        "call_value": trx_deposit,
+# ────────────────────────────────────────────────────────────────
+# 6.  Баланс TRC-20 USDT
+# ────────────────────────────────────────────────────────────────
+def get_usdt_balance(addr_b58: str) -> float:
+    addr_hex = b58_to_hex(addr_b58)[2:].rjust(64, "0")
+    payload = {
+        "owner_address": addr_b58,
+        "contract_address": USDT_CONTRACT,
+        "function_selector": "balanceOf(address)",
+        "parameter": addr_hex,
         "visible": True
     }
-    tx_obj = requests.post(
-        f"{TRONGRID_API}/wallet/triggersmartcontract",
-        json=trigger, headers=HEADERS, timeout=10
-    ).json()
-    tx = tx_obj.get("transaction")
+    r = requests.post(f"{TRONGRID_API}/wallet/triggerconstantcontract",
+                      json=payload, headers=HEADERS, timeout=10).json()
+    if not r.get("result", {}).get("result", True):
+        log.warning(f"constantcontract error: {base64.b64decode(r.get('message','')).decode(errors='ignore')}")
+        return 0.0
+    bal_hex = r.get("constant_result", ["0"])[0]
+    return int(bal_hex, 16) / 1_000_000
+
+def get_trx_balance(addr_b58: str) -> int:         # Sun
+    r = requests.post(f"{TRONGRID_API}/wallet/getaccount",
+                      json={"address": addr_b58, "visible": True},
+                      headers=HEADERS, timeout=10).json()
+    return r.get("balance", 0)
+
+# ────────────────────────────────────────────────────────────────
+# 7.  Генерация одноразового (ephemeral) адреса
+# ────────────────────────────────────────────────────────────────
+def generate_ephemeral_address(user_id: int) -> Dict[str, str]:
+    """
+    Создаёт новое Tron-keypair, записывает в БД (адрес+приватник+время).
+    """
+    priv = os.urandom(32)
+    sk   = ecdsa.SigningKey.from_string(priv, curve=ecdsa.SECP256k1)
+    pub  = b"\x04" + sk.verifying_key.to_string()
+    addr = pub_to_b58(pub)
+
+    supabase_client.set_deposit_address_and_privkey(user_id, addr, priv.hex())
+    log.info(f"Создан депозитный адрес {addr} (user={user_id})")
+    return {"address": addr, "private_key": priv.hex()}
+
+# ────────────────────────────────────────────────────────────────
+# 8.  Аренда энергии
+# ────────────────────────────────────────────────────────────────
+def trx_for_energy(units: int) -> int:          # Sun
+    trx = math.ceil(units / ENERGY_PER_TRX)
+    return trx * 1_000_000
+
+def rent_energy(master_priv: str, master_addr: str,
+                receiver: str, units: int = 65_000) -> int:
+    """
+    Арендует энергию. Возвращает фактически внесённый депозит в Sun
+    либо 0, если аренда не создана.
+    """
+    deposit = max(trx_for_energy(units), 1_000_000)      # min 1 TRX
+    params  = (
+        b58_to_hex(receiver)[2:].ljust(64, "0") +
+        hex(deposit)[2:].rjust(64, "0") +
+        hex(RESOURCE_ENERGY)[2:].rjust(64, "0")
+    )
+    txo = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
+                        json={
+                            "contract_address": ENERGY_MARKET,
+                            "owner_address": master_addr,
+                            "function_selector": "rentResource(address,uint256,uint256)",
+                            "parameter": params,
+                            "call_value": deposit,
+                            "fee_limit": 100_000_000,
+                            "visible": True
+                        }, headers=HEADERS, timeout=10).json()
+    tx = txo.get("transaction")
     if not tx:
-        log.error(f"rent_energy create failed: {tx_obj}")
-        return False
-    try:
-        tx_signed = sign_tx(tx, master_privkey)
-    except Exception as e:
-        log.error(f"rent_energy signing failed: {e}")
-        return False
-    br = requests.post(
-        f"{TRONGRID_API}/wallet/broadcasttransaction",
-        json=tx_signed, headers=HEADERS, timeout=10
-    ).json()
+        log.error(f"rent_energy error: {base64.b64decode(txo.get('message','')).decode(errors='ignore')}")
+        return 0
+
+    signed = sign_tx(tx, master_priv)
+    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+                       json=signed, headers=HEADERS, timeout=10).json()
     if not br.get("result"):
         log.error(f"RentEnergy broadcast failed: {br}")
+        return 0
+
+    log.info(f"RentEnergy tx {br['txid']} ; залог {deposit/1e6:.2f} TRX")
+    return deposit             # вернём для последующего возврата
+
+# ────────────────────────────────────────────────────────────────
+# 9.  Возврат залога
+# ────────────────────────────────────────────────────────────────
+def fetch_pledge(payer: str, receiver: str) -> int:
+    fn = "rentInfo(address,address,uint256)"
+    param = (
+        b58_to_hex(payer)[2:].rjust(64, "0") +
+        b58_to_hex(receiver)[2:].rjust(64, "0") +
+        hex(RESOURCE_ENERGY)[2:].rjust(64, "0")
+    )
+    r = requests.post(f"{TRONGRID_API}/wallet/triggerconstantcontract",
+                      json={
+                          "owner_address": payer,
+                          "contract_address": ENERGY_MARKET,
+                          "function_selector": fn,
+                          "parameter": param,
+                          "visible": True
+                      }, headers=HEADERS, timeout=10).json()
+    hex_val = r.get("constant_result", ["0"])[0]
+    return int(hex_val, 16)          # pledgeAmount in Sun
+
+def return_resource(master_priv: str, master_addr: str,
+                    receiver: str, amount_sun: int) -> bool:
+    if amount_sun == 0:
+        log.info(f"Pledge for {receiver} already 0")
+        return True
+    param = (
+        b58_to_hex(receiver)[2:].ljust(64, "0") +
+        hex(amount_sun)[2:].rjust(64, "0") +
+        hex(RESOURCE_ENERGY)[2:].rjust(64, "0")
+    )
+    txo = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
+                        json={
+                            "contract_address": ENERGY_MARKET,
+                            "owner_address": master_addr,
+                            "function_selector": "returnResource(address,uint256,uint256)",
+                            "parameter": param,
+                            "fee_limit": 10_000_000,
+                            "visible": True
+                        }, headers=HEADERS, timeout=10).json()
+    tx = txo.get("transaction")
+    if not tx:
+        log.error(f"returnResource create error: "
+                  f"{base64.b64decode(txo.get('message','')).decode(errors='ignore')}")
         return False
-    txid = br["txid"]
-    log.info(f"RentEnergy tx {txid}; депозит {trx_deposit/1e6:.2f} TRX отправлен")
-    # ждём включения и берём фактическую комиссию
-    time.sleep(6)
-    info = requests.get(
-        f"{TRONGRID_API}/wallet/gettransactioninfobyid",
-        params={"value": txid}, headers=HEADERS, timeout=10
-    ).json()
-    fee_sun = info.get("fee", 0)
-    log.info(f"Комиссия RentEnergy: {fee_sun/1e6:.6f} TRX (energy {info.get('energy_usage_total')})")
+    signed = sign_tx(tx, master_priv)
+    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+                       json=signed, headers=HEADERS, timeout=10).json()
+    if not br.get("result"):
+        log.error(f"returnResource broadcast failed: {br}")
+        return False
+    log.info(f"returnResource tx {br['txid']} ; ожидается возврат {amount_sun/1e6:.2f} TRX")
     return True
 
-def fund_address(master_priv, master_addr, dest_addr, amount_sun=110_000) -> bool:
-    create = requests.post(
-        f"{TRONGRID_API}/wallet/createtransaction",
-        json={
-            "owner_address": master_addr,
-            "to_address": dest_addr,
-            "amount": amount_sun,
-            "visible": True  # нужен txID
-        },
-        headers=HEADERS, timeout=10
-    ).json()
-    if "txID" not in create:
+# ────────────────────────────────────────────────────────────────
+# 10.  TRC-20 USDT transfer
+# ────────────────────────────────────────────────────────────────
+def usdt_transfer(from_priv: str, from_addr: str, to_addr: str,
+                  amount: float) -> Optional[str]:
+    value = int(round(amount * 1_000_000))
+    param = (
+        b58_to_hex(to_addr)[2:].rjust(64, "0") +
+        hex(value)[2:].rjust(64, "0")
+    )
+    txo = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
+                        json={
+                            "contract_address": USDT_CONTRACT,
+                            "owner_address": from_addr,
+                            "function_selector": "transfer(address,uint256)",
+                            "parameter": param,
+                            "fee_limit": 5_000_000,
+                            "visible": True
+                        }, headers=HEADERS, timeout=10).json()
+    tx = txo.get("transaction")
+    if not tx:
+        log.error(f"USDT transfer create error: "
+                  f"{base64.b64decode(txo.get('message','')).decode(errors='ignore')}")
+        return None
+    signed = sign_tx(tx, from_priv)
+    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+                       json=signed, headers=HEADERS, timeout=10).json()
+    if not br.get("result"):
+        log.error(f"USDT transfer broadcast failed: {br}")
+        return None
+    log.info(f"USDT transfer tx {br['txid']}")
+    return br["txid"]
+
+# ────────────────────────────────────────────────────────────────
+# 11.  Вспомогательные high-level функции для бота
+# ────────────────────────────────────────────────────────────────
+def fund_address(master_priv: str, master_addr: str,
+                 dest_addr: str, sun: int = 110_000) -> bool:
+    """
+    Переводит небольшую сумму TRX (по умолчанию 0.11) на dest_addr для активации.
+    """
+    create = requests.post(f"{TRONGRID_API}/wallet/createtransaction",
+                           json={
+                               "owner_address": master_addr,
+                               "to_address": dest_addr,
+                               "amount": sun,
+                               "visible": True
+                           }, headers=HEADERS, timeout=10).json()
+    if not create.get("txID"):
         log.error(f"Funding create failed: {create}")
         return False
-    try:
-        tx_signed = sign_tx(create, master_priv)
-    except Exception as e:
-        log.error(f"Funding sign failed: {e}")
-        return False
-    br = requests.post(
-        f"{TRONGRID_API}/wallet/broadcasttransaction",
-        json=tx_signed, headers=HEADERS, timeout=10
-    ).json()
+    signed = sign_tx(create, master_priv)
+    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+                       json=signed, headers=HEADERS, timeout=10).json()
     if not br.get("result"):
         log.error(f"Funding broadcast failed: {br}")
         return False
-    log.info(f"Funded {dest_addr} +{amount_sun/1e6:.2f} TRX (tx {br['txid'][:8]}…)")
-    time.sleep(6)  # подождать включения
+    log.info(f"Funding tx {br['txid']} ; +{sun/1e6:.2f} TRX -> {dest_addr}")
     return True
 
-def return_resource(master_privkey: str, master_addr: str, receiver_b58: str, deposit_sun: int, resource_type: int = 1) -> bool:
-    """
-    Завершает аренду энергии (или bandwidth) и возвращает депозит TRX.
-    * master_privkey – приватный ключ плательщика залога
-    * master_addr – T-адрес плательщика (owner_address)
-    * receiver_b58 – адрес, которому делегировали ресурс
-    * deposit_sun – сумма TRX к возврату, в SUN (1 TRX = 1_000_000 SUN)
-    * resource_type – 1 = Energy, 0 = Bandwidth
-    """
-    fn_selector = "returnResource(address,uint256,uint256)"
-    recv_param = addr_b58_to_hex(receiver_b58)[2:].ljust(64, "0")
-    amt_param = hex(deposit_sun)[2:].rjust(64, "0")
-    res_param = hex(resource_type)[2:].rjust(64, "0")
-    params = recv_param + amt_param + res_param
-    trigger = {
-        "contract_address": ENERGY_MARKET,  # TU2MJ5... JustLend DAO
-        "owner_address": master_addr,
-        "function_selector": fn_selector,
-        "parameter": params,
-        "fee_limit": 10_000_000,  # 10 TRX лимит комиссии
-        "call_value": 0,
-        "visible": True
-    }
-    create = requests.post(
-        f"{TRONGRID_API}/wallet/triggersmartcontract",
-        json=trigger, headers=HEADERS, timeout=10
-    ).json()
-    tx = create.get("transaction")
-    if not tx:
-        log.error(f"returnResource create failed: {create}")
-        return False
-    try:
-        tx_signed = sign_tx(tx, master_privkey)
-    except Exception as e:
-        log.error(f"returnResource signing failed: {e}")
-        return False
-    broadcast = requests.post(
-        f"{TRONGRID_API}/wallet/broadcasttransaction",
-        json=tx_signed, headers=HEADERS, timeout=10
-    ).json()
-    if not broadcast.get("result"):
-        log.error(f"returnResource broadcast failed: {broadcast}")
-        return False
-    txid = broadcast["txid"]
-    log.info(f"returnResource tx {txid} → запрос возврата {deposit_sun/1e6:.2f} TRX")
-    # — подождём включения и напишем фактическую комиссию —
-    time.sleep(6)
-    info = requests.get(
-        f"{TRONGRID_API}/wallet/gettransactioninfobyid",
-        params={"value": txid}, headers=HEADERS, timeout=10
-    ).json()
-    fee_sun = info.get("fee", 0)
-    log.info(f"Комиссия returnResource: {fee_sun/1e6:.6f} TRX (energy_used {info.get('energy_usage_total')})")
-    # в смарт-контракте депозит перечисляется мастеру тем же tx
-    return True
-
-# ───────────────────── USDT transfer + optional returnRent ─────
-def sign_and_broadcast_usdt_transfer(ephem_privkey: str, from_b58: str, to_b58: str, amount: float) -> bool:
-    value_int = int(round(amount * 1_000_000))
-    to_param = addr_b58_to_hex(to_b58)[2:].rjust(64, "0")
-    val_param = hex(value_int)[2:].rjust(64, "0")
-    params = to_param + val_param
-    trigger = {
-        "contract_address": USDT_CONTRACT,
-        "owner_address": from_b58,
-        "function_selector": "transfer(address,uint256)",
-        "parameter": params,
-        "fee_limit": 5_000_000,
-        "visible": True
-    }
-    tx_obj = requests.post(
-        f"{TRONGRID_API}/wallet/triggersmartcontract",
-        json=trigger, headers=HEADERS, timeout=10
-    ).json()
-    tx = tx_obj.get("transaction")
-    if not tx:
-        log.error(f"create transfer failed: {tx_obj}")
-        return False
-    try:
-        tx_signed = sign_tx(tx, ephem_privkey)
-    except Exception as e:
-        log.error(f"USDT transfer signing failed: {e}")
-        return False
-    br = requests.post(
-        f"{TRONGRID_API}/wallet/broadcasttransaction",
-        json=tx_signed, headers=HEADERS, timeout=10
-    ).json()
-    if br.get("result"):
-        log.info(f"USDT transfer broadcast: {br.get('txid')}")
-        return True
-    log.error(f"broadcast transfer failed: {br}")
-    return False
-
-# ───────────────────── QR-код (без изменений) ──────────────────
 def create_qr_code(data: str) -> str:
-    try:
-        img = qrcode.make(data)
-        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-        img.save(tmp.name)
-        return tmp.name
-    except Exception as e:
-        log.error(f"QR code error: {e}")
-        return ""
+    img = qrcode.make(data)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    img.save(tmp.name)
+    return tmp.name
 
-# ───────────────────── High-level API для бота ────────────────
-def create_temp_deposit_address(user_id: int):
-    kp = generate_ephemeral_address()
-    supabase_client.set_deposit_address_and_privkey(user_id, kp["address"], kp["private_key"])
-    log.info(f"Сформирован депозит {kp['address']} (user {user_id})")
-    return kp["address"]
-
-def fetch_pledge(payer_b58: str, receiver_b58: str, res_type: int = 1) -> int:
-    fn = "rentInfo(address,address,uint256)"
-    payer = addr_b58_to_hex(payer_b58)[2:].rjust(64, "0")
-    recv = addr_b58_to_hex(receiver_b58)[2:].rjust(64, "0")
-    rtype = hex(res_type)[2:].rjust(64, "0")
-    param = payer + recv + rtype
-    payload = {
-        "owner_address": payer_b58,
-        "contract_address": ENERGY_MARKET,
-        "function_selector": fn,
-        "parameter": param,
-        "visible": True
-    }
-    rsp = requests.post(
-        f"{TRONGRID_API}/wallet/triggerconstantcontract",
-        json=payload, headers=HEADERS
-    ).json()
-    hex_val = rsp.get("constant_result", ["0"])[0]
-    return int(hex_val, 16)  # SUN
-
-async def print_master_balance_at_start(bot: Bot):
-    master_addr, _ = derive_master_key_and_address()
-    bal = get_usdt_balance(master_addr)
-    msg = f"Bot started.\nMaster: {master_addr}\nUSDT Balance: {bal:.2f}"
-    log.info(msg)
-    if config.ADMIN_CHAT_ID:
-        try:
-            await bot.send_message(config.ADMIN_CHAT_ID, msg)
-        except Exception as e:
-            log.warning(f"notify admin failed: {e}")
-
-# ───────────────────── Постоянный опрос депозитов ─────────────
+# ────────────────────────────────────────────────────────────────
+# 12.  Основной цикл опроса депозитов
+# ────────────────────────────────────────────────────────────────
 async def poll_trc20_transactions(bot: Bot):
     log.info("Start poll…")
-    master_addr, master_priv = derive_master_key_and_address()
+    master_addr, master_priv = derive_master()
     rows = supabase_client.get_pending_deposits_with_privkey()
-    now = datetime.now()
+    now  = datetime.now()
+
     for row in rows:
-        user_id, tg_id = row["id"], row["telegram_id"]
-        dep_addr, dep_pk = row["deposit_address"], row["deposit_privkey"]
-        created_at = row["deposit_created_at"]
-        if not dep_addr or not dep_pk:
+        user_id     = row["id"]
+        tg_id       = row["telegram_id"]
+        dep_addr    = row["deposit_address"]
+        dep_priv    = row["deposit_privkey"]
+        created_at  = row["deposit_created_at"]
+
+        if not dep_addr or not dep_priv:
             continue
         if (now - created_at).total_seconds() > 24*3600:
             supabase_client.reset_deposit_address_and_privkey(user_id)
-            try:
-                await bot.send_message(tg_id, "Счёт истёк (24 ч). Создайте новый.")
-            except Exception:
-                pass
+            await bot.send_message(tg_id, "Счёт истёк (24 ч). Сформируйте новый.")
             continue
-        bal = get_usdt_balance(dep_addr)
-        if bal <= 0:
+
+        usdt = get_usdt_balance(dep_addr)
+        if usdt <= 0:
             continue
-        log.info(f"{bal:.2f} USDT на {dep_addr}")
-        # внутри poll_trc20_transactions
-        needed = calculate_trx_for_energy(65000) + 2_000_000  # +2 TRX запас на комиссию
-        if get_trx_balance(master_addr) < needed:
-            log.error("Мало TRX для аренды энергии. Пополните мастер-кошелёк.")
-            continue  # адрес пропускаем – вернёмся на следующем цикле
-        if not account_exists(dep_addr):
-            fund_ok = fund_address(master_priv, master_addr, dep_addr)
-            if not fund_ok:
+
+        log.info(f"{usdt:.2f} USDT на {dep_addr}")
+
+        # 1. Если деп-адрес ещё не активирован - отправляем 0.11 TRX
+        if get_trx_balance(dep_addr) == 0:
+            if not fund_address(master_priv, master_addr, dep_addr):
                 continue
-        # ---- 1. арендуем энергию ------------------------------------------------
-        if not rent_energy(master_priv, master_addr, dep_addr, 65000):
+            time.sleep(3)      # подождать включение
+
+        # 2. Арендуем энергию
+        deposit_sun = rent_energy(master_priv, master_addr, dep_addr)
+        if deposit_sun == 0:
             continue
-        # ---- 2. перевели USDT ----------------------------------------------------
-        if not sign_and_broadcast_usdt_transfer(dep_pk, dep_addr, master_addr, bal):
+
+        # 3. Переводим USDT
+        txid = usdt_transfer(dep_priv, dep_addr, master_addr, usdt)
+        if not txid:
             continue
-        # ---- 3. возвращаем депозит TRX ------------------------------------------
-        deposit_sun = fetch_pledge(master_addr, dep_addr)
-        if deposit_sun:
-            return_resource(master_priv, master_addr, dep_addr, deposit_sun)
-        # ---- 4. БД и продление подписки -----------------------------------------
-        supabase_client.create_payment(user_id, "tx", bal, 0)
-        days = math.ceil(bal * config.DAYS_FOR_100_USDT / 100)
-        supabase_client.update_payment_days(user_id, bal, days)
+
+        # 4. Возвращаем залог
+        pledge = fetch_pledge(master_addr, dep_addr)
+        if pledge:
+            return_resource(master_priv, master_addr, dep_addr, pledge)
+
+        # 5. Обновляем БД
+        supabase_client.create_payment(user_id, txid, usdt, 0)
+        days = math.ceil(usdt * config.DAYS_FOR_100_USDT / 100)
+        supabase_client.update_payment_days(user_id, usdt, days)
         supabase_client.apply_subscription_extension(user_id, days)
         supabase_client.reset_deposit_address_and_privkey(user_id)
-        master_bal = get_usdt_balance(master_addr)
-        msg = (f"Получено {bal:.2f} USDT.\nПодписка +{days} дн.\n"
-               f"Master balance: {master_bal:.2f} USDT")
-        try:
-            await bot.send_message(tg_id, msg)
-        except Exception:
-            pass
+
+        # 6. Уведомляем
+        master_usdt = get_usdt_balance(master_addr)
+        await bot.send_message(
+            tg_id,
+            f"✅ Получено {usdt:.2f} USDT\nПодписка продлена на {days} дней.\n"
+            f"Баланс мастер-кошелька: {master_usdt:.2f} USDT"
+        )
+
     log.info("Poll done.")

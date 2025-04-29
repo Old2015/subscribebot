@@ -121,46 +121,49 @@ def update_deposit_info(user_id: int, address: str):
 
 
 
-def set_deposit_address_and_privkey(user_id: int, address: str, privkey: str) -> dict | None:
+def set_deposit_address_and_privkey(user_id: int, address: str, privkey: str):
     """
-    Сохраняем одноразовый адрес, приватный ключ и дату выдачи.
-    Возвращаем обновлённую строку users или None, если id не найден.
+    Записываем одноразовый депозитный адрес, его приватный ключ и время выдачи.
     """
-    if not privkey:
-        raise ValueError("privkey is empty")
-
     with _get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
+        cur.execute("""
             UPDATE users
                SET deposit_address    = %s,
                    deposit_privkey    = %s,
+                   energy_deposit_sun = %s,
                    deposit_created_at = NOW()
              WHERE id = %s
-             RETURNING id, deposit_address, deposit_privkey, deposit_created_at
-            """,
-            (address, privkey, user_id),
-        )
-        row = cur.fetchone()
-        return dict(zip((d[0] for d in cur.description), row)) if row else None
+        """, (address, privkey, user_id))
+        conn.commit()
+
+def get_pending_deposits_with_privkey():
+    """
+    Возвращает пользователей с активным депозитом, где есть и адрес, и приватный ключ.
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, telegram_id, deposit_address, deposit_privkey, deposit_created_at
+              FROM users
+             WHERE deposit_address IS NOT NULL
+               AND deposit_privkey IS NOT NULL
+        """)
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in rows]
 
 def reset_deposit_address_and_privkey(user_id: int):
     """
-    Полностью очищаем адрес, ключ и дату выдачи — после оплаты/экспирации.
+    Обнуляем одноразовый адрес после использования/истечения.
     """
     with _get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
+        cur.execute("""
             UPDATE users
                SET deposit_address    = NULL,
                    deposit_privkey    = NULL,
                    deposit_created_at = NULL
              WHERE id = %s
-            """,
-            (user_id,),
-        )
+        """, (user_id,))
         conn.commit()
-
 
 
 
@@ -198,26 +201,6 @@ def get_payment_by_id(payment_id: int):
                 return dict(zip(cols, row))
     return None
 
-def get_pending_deposits_with_privkey():
-    """
-    Вернуть пользователей, у которых СУЩЕСТВУЕТ и адрес, и приватный ключ,
-    т.е. ожидаем поступления USDT.
-    """
-    with _get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, telegram_id, deposit_address, deposit_privkey,
-                   deposit_created_at
-              FROM users
-             WHERE deposit_address IS NOT NULL
-               AND deposit_privkey IS NOT NULL
-               AND deposit_address <> ''
-            """
-        )
-        rows = cur.fetchall()
-        cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in rows]
-    
 
 
 

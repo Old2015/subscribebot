@@ -50,7 +50,7 @@ async def cmd_restart(message: types.Message):
     user = supabase_client.get_user_by_telegram_id(telegram_id)
     if not user:
         await message.answer(
-            "Вы не зарегистрированы. Нажмите /start или «Оформить подписку».",
+            "Вы не зарегистрированы. Нажмите /start ",
             reply_markup=main_menu
         )
         return
@@ -204,7 +204,7 @@ async def cmd_subscribe(message: types.Message):
     # new_index = supabase_client.increment_deposit_index(user["id"])
     # tron_data = generate_ephemeral_address(index=new_index)
     # Или без счётчика:
-    tron_data = generate_ephemeral_address(index=user['id'])
+    tron_data = generate_ephemeral_address(user['id'])   # БЕЗ параметра index
     address = tron_data["address"]
     if not address:
         await message.answer(
