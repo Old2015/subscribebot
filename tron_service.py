@@ -3,6 +3,10 @@ import math
 import time
 import tempfile
 import requests
+
+from eth_utils import keccak  # для вычисления 4-байтового ID функции
+from tronapi import Tron  # псевдокод, можно использовать любую библиотеку для подписания
+
 from datetime import datetime
 
 import config
@@ -127,42 +131,89 @@ def generate_ephemeral_address() -> dict:
     }
 
 def rent_energy(master_privkey: str, ephemeral_address: str, energy_amount: int) -> bool:
-    """
-    Псевдо-функция "оплаты" аренды Energy для ephemeral_address на 65k energy, 
-    подписывая транзакцию master_privkey (или как-то иначе).
-    Реальная реализация требует вызова JustLend или TronLend контракта.
-    """
-    log.info(f"Rent {energy_amount} energy for ephemeral addr {ephemeral_address}, paying from master. (stub)")
-    # TODO: Реализовать либо TronPy-вызов, либо raw REST, 
-    #       подписать master_privkey => broadcast
+    # 1. Определяем адрес контракта Energy Rental (Hex-формат):
+    energy_rental_contract = "TU2MJ5Veik1LRAgjeSzEdvmDYx7mefJZvd"
+    # Можно использовать Base58 адрес с флагом visible=true
+
+    # 2. Готовим данные вызова функции rentResource(receiver, amount, resourceType=1) 
+    #   - receiver: ephemeral_address
+    #   - amount: TRX для депозита (Sun)
+    #   - resourceType: 1 (энергия)
+    function_selector = "rentResource(address,uint256,uint256)"
+    resource_type = 1  # 1 = Energy, согласно контракту [oai_citation:1‡docs.justlend.org](https://docs.justlend.org/developers/energy-rental#:~:text=greater%20than%201%20TRX%3B)
+    # Преобразуем адрес получателя в 32-байтовый ABI-параметр (с учетом Tron-формата):
+    receiver_hex = Tron.address_to_hex(ephemeral_address)  # 0x41... формат (21 байт с префиксом 0x41)
+    receiver_param = receiver_hex[2:]  # убираем '0x' для вставки в данные
+    receiver_param = receiver_param.ljust(64, '0')  # паддинг справа до 32 байт
+    # Вычисляем необходимый депозит TRX для указанного количества энергии:
+    trx_amount = calculate_trx_for_energy(energy_amount)  # функция расчёта по актуальному курсу EnergyStakePerTrx
+    if trx_amount < 1_000000:  # минимальный депозит 1 TRX (в Sun) [oai_citation:2‡docs.justlend.org](https://docs.justlend.org/developers/energy-rental#:~:text=,be%20greater%20than%201%20TRX)
+        trx_amount = 1_000000
+    amount_param = format(trx_amount, '064x')  # 32-байтное hex-значение суммы в Sun
+    resource_param = format(resource_type, '064x')  # 32-байтное hex-значение (1)
+    # Полная строка параметров для ABI (без ID функции):
+    parameters = receiver_param + amount_param + resource_param
+
+    # 3. Формируем транзакцию вызова смарт-контракта через TronGrid
+    tx_data = {
+        "contract_address": energy_rental_contract,
+        "owner_address": Tron.address_to_hex(master_address),  # master_address в hex (0x41...)
+        "function_selector": function_selector,
+        "parameter": parameters,
+        "fee_limit": 100_000000,        # fee_limit в Sun (например, 100 TRX лимит на сжигание)
+        "call_value": trx_amount,       # отправляемая сумма TRX (депозит), в Sun
+        "visible": True                 # указывает, что адреса заданы в Base58 (если мы подаем base58 адреса)
+    }
+    resp = requests.post("https://api.trongrid.io/wallet/triggersmartcontract", json=tx_data)
+    tx = resp.json().get("transaction")  # TransactionExtention.transaction (unsigned)
+
+    if not tx:
+        return False  # не удалось сформировать транзакцию
+    # 4. Подписываем транзакцию локально приватным ключом master_privkey
+    tx_signed = Tron.sign(tx, master_privkey)  # ECDSA secp256k1 подпись SHA256(raw_data)
+    # 5. Отправляем подписанную транзакцию в сеть Tron
+    resp_broadcast = requests.post("https://api.trongrid.io/wallet/broadcasttransaction", json=tx_signed)
+    result = resp_broadcast.json().get("result")
+    if not result:
+        # если транзакция отклонена, логируем причину (resp_broadcast.json().get("message"))
+        return False
+
+    # 6. (Опционально) Сохраняем идентификатор аренды для последующего возврата депозита.
+    # В контракте JustLend идентификатором аренды служит комбинация (payer=master, receiver=ephemeral, resourceType=1).
     return True
 
 def sign_and_broadcast_usdt_transfer(ephem_privkey: str, from_addr: str, to_addr: str, amount: float) -> bool:
-    """
-    Псевдо-функция: создаём транзакцию USDT.transfer(to_addr, amount * 1e6),
-    подписываем приватником ephemeral_addr, бродкастим.
-    """
-    # TODO: TronPy 0.4.x pseudo-code:
-    """
-    with Tron(provider=provider) as tron:
-        txn = (
-          tron.trx.build_contract_transaction(
-            contract_address=USDT_CONTRACT,
-            function_selector="transfer(address,uint256)",
-            parameter=[to_addr, int(amount*1e6)],
-            fee_limit=5_000_000
-          )
-          .with_owner(from_addr)
-          .build()
-          .sign(ephem_privkey)
-          .broadcast()
-        )
-        result = txn.wait()
-        if result["receipt"]["result"] == "SUCCESS":
-            return True
-    """
-    log.info(f"sign_and_broadcast_usdt_transfer ephemeral {from_addr}->{to_addr}, amount={amount}")
-    return True
+    # 1. Параметры транзакции transfer(address to, uint256 value)
+    usdt_contract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # USDT (TRC20) контракт на Tron
+    function_selector = "transfer(address,uint256)"
+    # USDT имеет 6 знаков после запятой, конвертируем сумму в целое количество минимальных единиц (SUN, т.к. 1 USDT = 1e6)
+    value = int(amount * 1_000000)
+    # Кодируем адрес получателя и сумму по ABI:
+    to_hex = Tron.address_to_hex(to_addr)[2:].rjust(64, '0')
+    value_hex = format(value, '064x')
+    parameters = to_hex + value_hex
+
+    # 2. Создаём транзакцию вызова смарт-контракта USDT.transfer
+    tx_data = {
+        "contract_address": usdt_contract,
+        "owner_address": from_addr,
+        "function_selector": function_selector,
+        "parameter": parameters,
+        "fee_limit": 5_000000,    # лимит по fee, например 5 TRX
+        "call_value": 0,         # для вызова TRC20 не отправляем TRX
+        "visible": True
+    }
+    resp = requests.post("https://api.trongrid.io/wallet/triggersmartcontract", json=tx_data)
+    tx = resp.json().get("transaction")
+    if not tx:
+        return False
+
+    # 3. Подписываем транзакцию приватным ключом ephemeral-адреса (from_addr)
+    tx_signed = Tron.sign(tx, ephem_privkey)
+    # 4. Бродкастим транзакцию в сеть Tron
+    resp_broadcast = requests.post("https://api.trongrid.io/wallet/broadcasttransaction", json=tx_signed)
+    result = resp_broadcast.json().get("result")
+    return bool(result)
 
 async def print_master_balance_at_start(bot: Bot):
     """
