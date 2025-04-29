@@ -6,7 +6,7 @@ import os
 from aiogram import Router, types
 import config
 import supabase_client
-from tron_service import create_qr_code, generate_new_tron_address
+from tron_service import create_qr_code, generate_ephemeral_address
 
 subscription_router = Router()
 log = logging.getLogger(__name__)
@@ -202,9 +202,9 @@ async def cmd_subscribe(message: types.Message):
 
     # Генерация нового адреса (если используете счётчик):
     # new_index = supabase_client.increment_deposit_index(user["id"])
-    # tron_data = generate_new_tron_address(index=new_index)
+    # tron_data = generate_ephemeral_address(index=new_index)
     # Или без счётчика:
-    tron_data = generate_new_tron_address(index=user['id'])
+    tron_data = generate_ephemeral_address(index=user['id'])
     address = tron_data["address"]
     if not address:
         await message.answer(
