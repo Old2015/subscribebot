@@ -60,38 +60,57 @@ def _pub_to_addr(pub_bytes: bytes) -> str:
     chk    = hashlib.sha256(hashlib.sha256(addr).digest()).digest()[:4]
     return base58.b58encode(addr + chk).decode()
 
+
+def _hex_to_b58(hex_addr: str) -> str:
+    """41… hex → Base58Check (T…)"""
+    addr_bytes = bytes.fromhex(hex_addr)
+    checksum   = hashlib.sha256(hashlib.sha256(addr_bytes).digest()).digest()[:4]
+    return base58.b58encode(addr_bytes + checksum).decode()
+
+def _pub_to_b58(pub65: bytes) -> str:
+    """нежатый pubkey (0x04‖X‖Y) → Tron Base58 адрес"""
+    keccak = hashlib.new("keccak256", pub65[1:]).digest()
+    addr   = b"\x41" + keccak[-20:]
+    checksum = hashlib.sha256(hashlib.sha256(addr).digest()).digest()[:4]
+    return base58.b58encode(addr + checksum).decode()
+
 def sign_tx(tx: dict, priv_hex: str) -> dict:
-    """
-    Подписываем tx и подбираем корректный recovery-byte (0/1),
-    чтобы восстановленный адрес совпал с owner_address.
-    """
+    """Подписывает trx, подбирая правильный recovery-byte (0/1)."""
     txid = bytes.fromhex(tx["txID"])
 
-    sk    = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex),
-                                         curve=ecdsa.SECP256k1)
-    # 64-байтная (r‖s) строка в canonical-форме
-    sig_rs = sk.sign_digest(
-        txid, sigencode=ecdsa.util.sigencode_string_canonize
-    )
+    # ----- owner_address из raw_data -----------------------------------------
+    owner_raw = tx["raw_data"]["contract"][0]["parameter"]["value"]["owner_address"]
+    owner_b58 = _hex_to_b58(owner_raw) if owner_raw.startswith("41") else owner_raw
 
+    # ----- быстрый check: совпадает ли приватный ключ с owner_address --------
+    sk = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex),
+                                      curve=ecdsa.SECP256k1)
+    pk = sk.verifying_key
+    addr_from_priv = _pub_to_b58(b"\x04" + pk.to_string())
+    if addr_from_priv != owner_b58:
+        raise ValueError("Приватный ключ не соответствует owner_address транзакции")
+
+    # ----- подпись r‖s --------------------------------------------------------
+    sig_rs = sk.sign_digest(txid, sigencode=ecdsa.util.sigencode_string_canonize)
+
+    # ----- ищем валидный rec_id (0/1) ----------------------------------------
     for rec_id in (0, 1):
         try:
             vk = ecdsa.VerifyingKey.from_public_key_recovery(
-                sig_rs,
-                txid,
+                sig_rs, txid,
                 curve=ecdsa.SECP256k1,
-                sigdecode=ecdsa.util.sigdecode_string,
+                sigdecode=ecdsa.util.sigdecode_string
             )[rec_id]
-            pub = b"\x04" + vk.to_string()
-            if _pub_to_addr(pub) == tx["raw_data"]["contract"][0]["parameter"]["value"]["owner_address"]:
-                full_sig = sig_rs + bytes([rec_id])
+            if _pub_to_b58(b"\x04" + vk.to_string()) == owner_b58:
+                full_sig = (sig_rs + bytes([rec_id])).hex()
                 signed   = tx.copy()
-                signed["signature"] = [full_sig.hex()]
+                signed["signature"] = [full_sig]
                 return signed
         except Exception:
             pass
 
     raise ValueError("Could not produce valid signature (rec_id 0/1)")
+
 
 # ───────────────────── BIP-44 master из сид-фразы ──────────────
 def derive_master_key_and_address():
@@ -180,14 +199,83 @@ def rent_energy(master_privkey: str, master_addr: str,
         return False
 
     tx_signed  = sign_tx(tx, master_privkey)
-    broadcast  = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
-                               json=tx_signed, headers=HEADERS, timeout=10).json()
-    if broadcast.get("result"):
-        log.info(f"RentEnergy broadcast txid: {broadcast.get('txid')}")
-        return True
+    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+                       json=tx_signed, headers=HEADERS).json()
+    if not br.get("result"):
+        log.error(f"RentEnergy broadcast failed: {br}")
+        return False
 
-    log.error(f"RentEnergy broadcast failed: {broadcast}")
-    return False
+    txid = br["txid"]
+    log.info(f"RentEnergy tx {txid}; депозит {trx_deposit/1e6:.2f} TRX отправлен")
+
+    # ждём включения и берём фактическую комиссию
+    time.sleep(6)
+    info = requests.get(f"{TRONGRID_API}/wallet/gettransactioninfobyid",
+                        params={"value": txid}).json()
+    fee_sun = info.get("fee", 0)
+    log.info(f"Комиссия RentEnergy: {fee_sun/1e6:.6f} TRX "
+             f"(energy {info.get('energy_usage_total')})")
+    return True
+
+
+def return_resource(master_privkey: str,
+                    master_addr: str,
+                    receiver_b58: str,
+                    deposit_sun: int,
+                    resource_type: int = 1) -> bool:
+    """
+    Завершает аренду энергии (или bandwidth) и возвращает депозит TRX.
+    * master_privkey  – приватный ключ плательщика залога
+    * master_addr     – T-адрес плательщика (owner_address)
+    * receiver_b58    – адрес, которому делегировали ресурс
+    * deposit_sun     – сумма TRX к возврату, в SUN (1 TRX = 1_000_000 SUN)
+    * resource_type   – 1 = Energy, 0 = Bandwidth
+    """
+    fn_selector = "returnResource(address,uint256,uint256)"
+
+    recv_param = addr_b58_to_hex(receiver_b58)[2:].ljust(64, "0")
+    amt_param  = hex(deposit_sun)[2:].rjust(64, "0")
+    res_param  = hex(resource_type)[2:].rjust(64, "0")
+    params     = recv_param + amt_param + res_param
+
+    trigger = {
+        "contract_address": ENERGY_MARKET,   # TU2MJ… JustLend DAO
+        "owner_address":    master_addr,
+        "function_selector":fn_selector,
+        "parameter":        params,
+        "fee_limit":        10_000_000,       # 10 TRX лимит комиссии
+        "call_value":       0,
+        "visible":          True
+    }
+
+    create = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
+                           json=trigger, headers=HEADERS, timeout=10).json()
+    tx = create.get("transaction")
+    if not tx:
+        log.error(f"returnResource create failed: {create}")
+        return False
+
+    tx_signed = sign_tx(tx, master_privkey)
+    broadcast = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+                              json=tx_signed, headers=HEADERS, timeout=10).json()
+    if not broadcast.get("result"):
+        log.error(f"returnResource broadcast failed: {broadcast}")
+        return False
+
+    txid = broadcast["txid"]
+    log.info(f"returnResource tx {txid} → запрос возврата {deposit_sun/1e6:.2f} TRX")
+
+    # — подождём включения и напишем фактическую комиссию —
+    time.sleep(6)
+    info = requests.get(f"{TRONGRID_API}/wallet/gettransactioninfobyid",
+                        params={"value": txid}, headers=HEADERS, timeout=10).json()
+    fee_sun = info.get("fee", 0)
+    log.info(f"Комиссия returnResource: {fee_sun/1e6:.6f} TRX "
+             f"(energy_used {info.get('energy_usage_total')})")
+
+    # в смарт-контракте депозит перечисляется мастеру тем же tx
+    return True
+
 
 # ───────────────────── USDT transfer + optional returnRent ─────
 def sign_and_broadcast_usdt_transfer(ephem_privkey: str, from_b58: str,
@@ -266,7 +354,6 @@ async def poll_trc20_transactions(bot: Bot):
 
         if not dep_addr or not dep_pk:
             continue
-
         if (now - created_at).total_seconds() > 24*3600:
             supabase_client.reset_deposit_address_and_privkey(user_id)
             try:
@@ -280,12 +367,20 @@ async def poll_trc20_transactions(bot: Bot):
             continue
 
         log.info(f"{bal} USDT на {dep_addr}")
+
+        # ---- 1. арендуем энергию ------------------------------------------------
         if not rent_energy(master_priv, master_addr, dep_addr, 65000):
             continue
 
+        # ---- 2. перевели USDT ----------------------------------------------------
         if not sign_and_broadcast_usdt_transfer(dep_pk, dep_addr, master_addr, bal):
             continue
 
+        # ---- 3. возвращаем депозит TRX ------------------------------------------
+        deposit_sun = calculate_trx_for_energy(65000)      # тот же объём, что арендовали
+        return_resource(master_priv, master_addr, dep_addr, deposit_sun)
+
+        # ---- 4. БД и продление подписки -----------------------------------------
         supabase_client.create_payment(user_id, "tx", bal, 0)
         days = math.ceil(bal * config.DAYS_FOR_100_USDT / 100)
         supabase_client.update_payment_days(user_id, bal, days)
