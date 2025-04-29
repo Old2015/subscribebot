@@ -249,34 +249,23 @@ def rent_energy(master_privkey: str, master_addr: str,
              f"(energy {info.get('energy_usage_total')})")
     return True
 
-def fund_address(master_priv: str,
-                 master_addr: str,
-                 dest_addr: str,
-                 amount_sun: int = 110_000) -> bool:
-    """
-    Переводит amount_sun (≥0.1 TRX) с master_addr на dest_addr,
-    чтобы активировать одноразовый счёт.
-    """
-    # 1. создаём raw-транзакцию
+def fund_address(master_priv, master_addr, dest_addr, amount_sun=110_000):
     create = requests.post(
         f"{TRONGRID_API}/wallet/createtransaction",
         json={
             "owner_address": master_addr,
             "to_address":    dest_addr,
             "amount":        amount_sun,
-            "visible":       True          # ← чтобы получить txID
+            "visible":       True          # нужен txID
         },
         headers=HEADERS, timeout=10
     ).json()
 
-    if "Error" in create or "txID" not in create:
+    if "txID" not in create:
         log.error(f"Funding create failed: {create}")
         return False
 
-    # 2. подписываем
     tx_signed = sign_tx(create, master_priv)
-
-    # 3. отправляем
     br = requests.post(
         f"{TRONGRID_API}/wallet/broadcasttransaction",
         json=tx_signed, headers=HEADERS, timeout=10
@@ -286,13 +275,11 @@ def fund_address(master_priv: str,
         log.error(f"Funding broadcast failed: {br}")
         return False
 
-    txid = br["txid"]
-    log.info(f"Funded {dest_addr} +{amount_sun/1e6:.2f} TRX (tx {txid[:8]}…)")
+    log.info(f"Funded {dest_addr} +{amount_sun/1e6:.2f} TRX "
+             f"(tx {br['txid'][:8]}…)")
 
-    # ждём подтверждение
-    time.sleep(6)
+    time.sleep(6)          # подождать включения
     return True
-
 
 def return_resource(master_privkey: str,
                     master_addr: str,
