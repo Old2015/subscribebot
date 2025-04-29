@@ -2,6 +2,7 @@ import logging
 import math
 import time
 import tempfile
+import requests
 from datetime import datetime
 
 import config
@@ -46,6 +47,23 @@ TRC20_ABI = [
 ]
 
 USDT_CONTRACT = config.TRC20_USDT_CONTRACT
+TRONGRID_API = "https://api.trongrid.io"
+
+B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+B58_INDEX    = {c: i for i, c in enumerate(B58_ALPHABET)}
+
+def b58check_decode(addr: str) -> bytes:
+    num = 0
+    for ch in addr:
+        num = num * 58 + B58_INDEX[ch]
+    raw = num.to_bytes(25, byteorder="big")        # 1-байт prefix + 20-байт addr + 4-байт checksum
+    data, checksum = raw[:-4], raw[-4:]
+    from hashlib import sha256
+    if checksum != sha256(sha256(data).digest()).digest()[:4]:
+        raise ValueError("bad base58 checksum")
+    return data          # вернёт b'\x41…' (21 байт)
+
+
 
 def derive_master_key_and_address():
     """
@@ -66,18 +84,36 @@ def derive_master_key_and_address():
     return master_address, master_privkey
 
 def get_usdt_balance(address: str) -> float:
-    """
-    Проверяем баланс USDT (TRC20) на адресе 'address'.
-    Предполагаем, что TronPy 0.4.x (Contract(...).at(...)).
-    """
     try:
-        base_c = Contract(client=client, abi=TRC20_ABI, bytecode=b"")
-        usdt = base_c.at(USDT_CONTRACT)
-        raw = usdt.functions.balanceOf(address)
-        return raw / 1_000_000
+        # Формируем параметр: 32-байтовый адрес в hex
+        # Убираем префикс 41, дополняем слева нулями до 64 символов hex
+        addr_bytes = b58check_decode(address)   # 21 байт
+        addr_hex = addr_bytes.hex()
+        if addr_hex.startswith("41"):
+            addr_hex = addr_hex[2:]  # убрать '41'
+        param = addr_hex.rjust(64, '0')  # дополняем до 32 байт (64 hex символа)
+        # Готовим запрос к TronGrid
+        payload = {
+            "owner_address": address,
+            "contract_address": USDT_CONTRACT,
+            "function_selector": "balanceOf(address)",
+            "parameter": param,
+            "fee_limit": 1_000_000,
+            "call_value": 0,
+            "visible": True
+        }
+        headers = {"TRON-PRO-API-KEY": config.TRON_API_KEY}  # если необходим API-KEY
+        resp = requests.post(f"{TRONGRID_API}/wallet/triggerconstantcontract",
+                             json=payload, headers=headers)
+        data = resp.json()
+        # TronGrid вернёт результат в поле constant_result (список hex-значений) [oai_citation:1‡quicknode.com](https://www.quicknode.com/docs/tron/wallet-triggersmartcontract#:~:text=constant_result)
+        result_hex = data.get("constant_result", [None])[0]
+        if result_hex:
+            balance_int = int(result_hex, 16)
+            return balance_int / 1_000_000  # преобразуем в USDT (6 знаков после запятой)
     except Exception as e:
         log.warning(f"get_usdt_balance({address}) failed: {e}")
-        return 0.0
+    return 0.0
 
 def generate_ephemeral_address() -> dict:
     """
