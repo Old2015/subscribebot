@@ -121,22 +121,28 @@ def update_deposit_info(user_id: int, address: str):
 
 
 
-def set_deposit_address_and_privkey(user_id: int, address: str, privkey: str):
+def set_deposit_address_and_privkey(user_id: int, address: str, privkey: str) -> dict | None:
     """
-    Сохраняем одноразовый адрес + приватник и время выдачи.
+    Сохраняем одноразовый адрес, приватный ключ и дату выдачи.
+    Возвращаем обновлённую строку users или None, если id не найден.
     """
+    if not privkey:
+        raise ValueError("privkey is empty")
+
     with _get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE users
-               SET deposit_address     = %s,
-                   deposit_privkey     = %s,
-                   deposit_created_at  = NOW()
+               SET deposit_address    = %s,
+                   deposit_privkey    = %s,
+                   deposit_created_at = NOW()
              WHERE id = %s
+             RETURNING id, deposit_address, deposit_privkey, deposit_created_at
             """,
             (address, privkey, user_id),
         )
-        conn.commit()
+        row = cur.fetchone()
+        return dict(zip((d[0] for d in cur.description), row)) if row else None
 
 def reset_deposit_address_and_privkey(user_id: int):
     """
@@ -227,6 +233,24 @@ def create_payment(user_id: int, txhash: str, amount_usdt: float, days_added: in
                 VALUES (%s, %s, %s, %s, NOW(), NOW())
             """, (user_id, txhash, amount_usdt, days_added))
             conn.commit()
+
+
+def update_deposit_created_at(user_id: int, created_at: datetime):
+    """
+    Сохраняем только время выдачи адреса (deposit_created_at)
+    — для совместимости со старым кодом subscription.py.
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+               SET deposit_created_at = %s
+             WHERE id = %s
+            """,
+            (created_at, user_id),
+        )
+        conn.commit()
+
 
 def update_payment_days(user_id: int, amount_usdt: float, days_added: int):
     """
