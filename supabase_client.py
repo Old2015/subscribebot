@@ -128,10 +128,10 @@ def set_deposit_address_and_privkey(user_id: int, address: str, privkey: str):
     with _get_connection() as conn, conn.cursor() as cur:
         cur.execute("""
             UPDATE users
-               SET deposit_address    = %s,
-                   deposit_privkey    = %s,
-                   energy_deposit_sun = %s,
-                   deposit_created_at = NOW()
+               SET deposit_address     = %s,
+                   deposit_privkey     = %s,
+                   deposit_created_at  = NOW(),
+                   energy_deposit_sun  = NULL
              WHERE id = %s
         """, (address, privkey, user_id))
         conn.commit()

@@ -379,6 +379,7 @@ async def poll_trc20_transactions(bot: Bot):
         # 1. Если деп-адрес ещё не активирован - отправляем 0.11 TRX
         if get_trx_balance(dep_addr) == 0:
             if not fund_address(master_priv, master_addr, dep_addr):
+                log.error("Не удалось отправить 0.11 TRX для активации")
                 continue
             time.sleep(3)      # подождать включение
 
