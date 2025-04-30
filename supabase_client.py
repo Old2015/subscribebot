@@ -209,6 +209,21 @@ def get_payment_by_id(payment_id: int):
 
 
 
+
+def create_payment(user_id: int, txhash: str, amount_usdt: float, days_added: int):
+    """
+    Создаём запись в payments.
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO payments(user_id, txhash, amount_usdt, days_added, 
+                                     paid_at, created_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+            """, (user_id, txhash, amount_usdt, days_added))
+            conn.commit()
+
+
 def update_deposit_created_at(user_id: int, created_at: datetime):
     """
     Сохраняем только время выдачи адреса (deposit_created_at)

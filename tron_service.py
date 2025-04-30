@@ -360,35 +360,6 @@ def _wait_energy(addr, min_energy=20_000, timeout=90):
         time.sleep(6)                          # ≈ 1 блок
     return False                               # не дождались
 
-def _wait_energy(self, address: str, wait_seconds: int = 30) -> bool:
-        """
-        Старый код проверял energy_usage > 0, что мешало перейти к переводу.
-        Теперь просто делаем небольшую задержку, чтобы аренда применилась.
-        Или проверяем поле account_resource.EnergyLimit, если хотим убедиться,
-        что энергия действительно доступна.
-        """
-        end_time = time.time() + wait_seconds
-        while time.time() < end_time:
-            time.sleep(5)  # ждём 5 секунд перед опросом
-            try:
-                account_info = self._getaccount(address)
-                # Проверим поле delegatedFrozenBalanceForEnergy / EnergyLimit / и т.д.
-                resources = account_info.get("account_resource", {})
-                energy_limit = resources.get("EnergyLimit", 0)
-                if energy_limit > 0:
-                    self._logger.info(
-                        f"Address {address}: EnergyLimit={energy_limit} - OK to proceed."
-                    )
-                    return True
-            except Exception as e:
-                self._logger.warning(
-                    f"Error while checking energy for {address}: {e}"
-                )
-                # пропускаем и продолжаем цикл
-
-        self._logger.warning(f"⌛ energy still 0 – retry later (address={address})")
-        return False
-
 def usdt_transfer(from_priv: str,
                   from_addr: str,
                   to_addr:   str,
