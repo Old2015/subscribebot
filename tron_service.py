@@ -87,45 +87,49 @@ def _looks_like_hex(s: str) -> bool:
 # ────────────────────────────────────────────────────────────────
 def sign_tx(tx: Dict, priv_hex: str) -> Dict:
     """
-    Подписывает Tron-транзакцию приватным ключом.
-    • проверяет, что ключ действительно принадлежит owner_address;
-    • перебирает rec_id 0/1, пока адрес не совпадёт.
+    Подписывает Tron-транзакцию.
+    • Проверяет, что priv→addr совпадают.
+    • Подпись canonical r|s.
+    • rec_id подбирается через recovery *с тем же* SHA-256, что и txID.
     """
     priv_hex = priv_hex.lstrip("0x")
-    sk  = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex), curve=ecdsa.SECP256k1)
-    pk  = sk.verifying_key
-    pub = b"\x04" + pk.to_string()              # 65-байтный uncompressed
+    if len(priv_hex) < 64:                       # safety — дополняем слева до 64 hex
+        priv_hex = priv_hex.rjust(64, "0")
 
+    sk  = ecdsa.SigningKey.from_string(bytes.fromhex(priv_hex),
+                                       curve=ecdsa.SECP256k1)
+    pub = b"\x04" + sk.verifying_key.to_string()          # 65-byte uncompressed
     txid = bytes.fromhex(tx["txID"])
 
-    # owner_address из raw_data
+    # ── owner_address из raw_data
     owner_raw = tx["raw_data"]["contract"][0]["parameter"]["value"]["owner_address"]
     owner_raw = owner_raw.lstrip("0x")
-    if _looks_like_hex(owner_raw):
-        owner_b58 = hex_to_b58(owner_raw[-42:])      # берём последние 42, на случай 'a614…'
-    else:
-        owner_b58 = owner_raw
+    owner_b58 = hex_to_b58(owner_raw[-42:]) if _looks_like_hex(owner_raw) else owner_raw
 
-    # быстрый check, что ключ тот самый
+    # быстрая проверка «приватник → адрес»
     if pub_to_b58(pub) != owner_b58:
         raise ValueError("Приватный ключ не соответствует owner_address")
 
-    # canonical r|s
+    # ── canonical r|s
     sig_rs = sk.sign_digest(txid, sigencode=ecdsa.util.sigencode_string_canonize)
 
-    # ищем валидный rec_id
-    for rec_id in (0, 1):
-        try:
-            vk = ecdsa.VerifyingKey.from_public_key_recovery(
-                    sig_rs, txid,
-                    curve=ecdsa.SECP256k1,
-                    sigdecode=ecdsa.util.sigdecode_string)[rec_id]
-            if pub_to_b58(b"\x04" + vk.to_string()) == owner_b58:
-                signed = tx.copy()
-                signed["signature"] = [(sig_rs + bytes([rec_id])).hex()]
-                return signed
-        except Exception:
-            pass
+    # ── восстановление pubkey → выбор rec_id (важно: тот же SHA-256!)
+    try:
+        cands = ecdsa.VerifyingKey.from_public_key_recovery_with_digest(
+            signature = sig_rs,
+            digest    = txid,                      # уже готовый sha256(tx.raw)
+            curve     = ecdsa.SECP256k1,
+            sigdecode = ecdsa.util.sigdecode_string,
+            hashfunc  = hashlib.sha256             # ← ключевое отличие
+        )
+    except Exception as e:                         # крайне редко, но перехватим
+        raise ValueError(f"recovery failed: {e}")
+
+    for rec_id, vk in enumerate(cands):
+        if pub_to_b58(b"\x04" + vk.to_string()) == owner_b58:
+            signed              = tx.copy()
+            signed["signature"] = [(sig_rs + bytes([rec_id])).hex()]
+            return signed
 
     raise ValueError("Cannot build valid signature for owner_address")
 
@@ -508,6 +512,23 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         dep_addr    = row["deposit_address"]
         dep_priv    = row["deposit_privkey"]
         created_at  = row["deposit_created_at"]
+# -- ❷-0  валидация пары priv/addr ------------------------
+        try:
+            addr_from_priv = pub_to_b58(
+                b'\x04' + ecdsa.SigningKey
+                            .from_string(bytes.fromhex(dep_priv),
+                                         curve=ecdsa.SECP256k1)
+                            .verifying_key
+                            .to_string())
+        except Exception:
+            log.error(f"⚠️  dep_priv испорчен ({dep_priv[:8]}…) – пропуск")
+            continue
+
+        if addr_from_priv != dep_addr:          # ► continue теперь ВНУТРИ цикла
+            log.error(f"⚠️  Приватный ключ не подходит к {dep_addr} – аннулирую")
+            supabase_client.reset_deposit_address_and_privkey(user_id)
+            continue
+
 
         # пропуск невалидных строк
         if not dep_addr or not dep_priv:
@@ -548,7 +569,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 
         # 1. при необходимости активируем адрес (0.11 TRX)
         if get_trx_balance(dep_addr) == 0:
-            if not fund_address(master_priv, master_addr, dep_addr, 110_000):
+            if not fund_address(master_priv, master_addr, dep_addr):
                 log.error("❌ Не удалось активировать депозит-адрес (0.11 TRX)")
                 continue
             time.sleep(3)      # ждём включения блока
