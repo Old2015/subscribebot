@@ -348,8 +348,28 @@ def return_resource(master_priv: str, master_addr: str,
 # ────────────────────────────────────────────────────────────────
 # 10.  TRC-20 USDT transfer
 # ────────────────────────────────────────────────────────────────
-def usdt_transfer(from_priv: str, from_addr: str, to_addr: str,
-                  amount: float) -> Optional[str]:
+
+def _wait_energy(addr, min_energy=20_000, timeout=90):
+    """Ждём, пока на addr появится min_energy или истечёт timeout (сек)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        acc = requests.post(f"{TRONGRID_API}/wallet/getaccount",
+                            json={"address": addr, "visible":True}).json()
+        if acc.get("energy_usage", 0) >= min_energy:
+            return True                        # энергия пришла
+        time.sleep(6)                          # ≈ 1 блок
+    return False                               # не дождались
+
+def usdt_transfer(from_priv: str,
+                  from_addr: str,
+                  to_addr:   str,
+                  amount:    float,
+                  fee_limit: int = 8_000_000) -> Optional[str]:
+    """
+    Переводит `amount` USDT с `from_addr` на `to_addr`.
+    • fee_limit — лимит TRX на комиссию (Sun). По-умолчанию 8 TRX.
+    Возвращает txid либо None, если broadcast не прошёл.
+    """
     value = int(round(amount * 1_000_000))
     param = (
         b58_to_hex(to_addr)[2:].rjust(64, "0") +
@@ -361,7 +381,7 @@ def usdt_transfer(from_priv: str, from_addr: str, to_addr: str,
                             "owner_address": from_addr,
                             "function_selector": "transfer(address,uint256)",
                             "parameter": param,
-                            "fee_limit": 5_000_000,
+                            "fee_limit": 8_000_000,
                             "visible": True
                         }, headers=HEADERS, timeout=10).json()
     tx = txo.get("transaction")
@@ -375,8 +395,10 @@ def usdt_transfer(from_priv: str, from_addr: str, to_addr: str,
     if not br.get("result"):
         log.error(f"USDT transfer broadcast failed: {br}")
         return None
-    log.info(f"USDT transfer tx {br['txid']}")
-    return br["txid"]
+
+    txid = br["txid"]                      # ← ➊ получили hash
+    log.info(f"➜ USDT tx {txid}; energy OK, bandwidth OK")  # ← ➋ теперь можно писать
+    return txid                            # ← ➌ и вернуть вызывающему
 
 # ────────────────────────────────────────────────────────────────
 # 11.  Вспомогательные high-level функции для бота
@@ -577,6 +599,9 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         pledge_before = rent_energy(master_priv, master_addr, dep_addr)
         if pledge_before == 0:
             log.error("❌ rent_energy не создана — пропуск")
+            continue
+        if not _wait_energy(dep_addr):
+            log.warning("⌛ energy still 0 – retry later")
             continue
 
         # 3. переводим USDT
