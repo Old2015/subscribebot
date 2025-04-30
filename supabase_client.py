@@ -150,6 +150,12 @@ def get_pending_deposits_with_privkey():
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in rows]
+    
+def get_all_deposit_addresses() -> list[str]:
+    with _get_connection() as c, c.cursor() as cur:
+        cur.execute("SELECT deposit_address FROM users WHERE deposit_address IS NOT NULL")
+        return [r[0] for r in cur.fetchall()]
+    
 
 def reset_deposit_address_and_privkey(user_id: int):
     """
