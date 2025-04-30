@@ -1,6 +1,6 @@
 import psycopg2
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
 
 log = logging.getLogger(__name__)
@@ -241,26 +241,31 @@ def update_deposit_created_at(user_id: int, created_at: datetime):
         conn.commit()
 
 
-def update_payment_days(user_id: int, amount_usdt: float, days_added: int):
+def update_payment_days(user_id: int, amount_usdt: float, days_added: int) -> None:
     """
-    Обновляем days_added в записи payments,
-    если вы хотите задним числом пересчитать.
-    Или можно было сразу при create_payment(...).
+    Обновляет поле days_added в САМОЙ ПОСЛЕДНЕЙ записи payments
+    для данного user_id и той же суммы USDT.
     """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            # Предположим, найдём последнюю оплату c таким amount_usdt.
-            cur.execute("""
-                UPDATE payments
-                   SET days_added = %s
-                 WHERE user_id = %s
-                   AND amount_usdt = %s
-                 ORDER BY id DESC
-                 LIMIT 1
-                RETURNING id
-            """, (days_added, user_id, amount_usdt))
-            row = cur.fetchone()
-            conn.commit()
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH last_pay AS (
+                SELECT id
+                FROM   payments
+                WHERE  user_id = %s
+                  AND  amount_usdt = %s
+                ORDER  BY id DESC
+                LIMIT  1
+            )
+            UPDATE payments AS p
+            SET    days_added = %s
+            FROM   last_pay
+            WHERE  p.id = last_pay.id
+            RETURNING p.id
+            """,
+            (user_id, amount_usdt, days_added)
+        )
+        conn.commit()
 
 def apply_subscription_extension(user_id: int, days_to_add: int):
     """

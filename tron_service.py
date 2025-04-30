@@ -4,7 +4,7 @@
 tron_service.py — вся работа с TRON через TronGrid (без tronpy/TronWeb).
 """
 
-import os, math, time, base64, logging, tempfile, requests, qrcode, base58, ecdsa, hashlib
+import os, math, time, base64, logging, tempfile, requests, qrcode, base58, ecdsa, hashlib, asyncio
 from datetime import datetime
 from typing import Tuple, Optional, Dict
 
@@ -250,13 +250,13 @@ def rent_energy(master_priv: str, master_addr: str,
 
     txo = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
                         json={
-                            "contract_address": ENERGY_MARKET,
-                            "owner_address":    b58_to_hex(master_addr),  # ← hex!
-                            "function_selector":"rentResource(address,uint256,uint256)",
-                            "parameter":        params,
-                            "call_value":       deposit,
-                            "fee_limit":        100_000_000,
-                            "visible":          False                    # ← hex-режим
+                            "contract_address": ENERGY_MARKET,        # base58
+                            "owner_address":    master_addr,          # base58
+                            "function_selector": "rentResource(address,uint256,uint256)",
+                            "parameter":         params,
+                            "call_value":        deposit,
+                            "fee_limit":         100_000_000,
+                            "visible":           True
                         }, headers=HEADERS, timeout=10).json()
     tx = txo.get("transaction")
     if not tx:
@@ -389,16 +389,13 @@ def fund_address(master_priv: str, master_addr: str, dest_addr: str) -> bool:
         log.error("Мало TRX на мастер-кошельке для активации депозита")
         return False
 
-    create = requests.post(
-        f"{TRONGRID_API}/wallet/createtransaction",
-        json={
-            "owner_address": b58_to_hex(master_addr),  # hex-формат
-            "to_address":    b58_to_hex(dest_addr),
-            "amount":        amount,
-            "visible":       False                    # hex-режим
-        },
-        headers=HEADERS, timeout=10
-    ).json()
+    create = requests.post(f"{TRONGRID_API}/wallet/createtransaction",
+                           json={
+                               "owner_address": master_addr,   # base58
+                               "to_address":    dest_addr,     # base58
+                               "amount":        amount,
+                               "visible":       True
+                           }, headers=HEADERS, timeout=10).json()
 
     if "txID" not in create:
         log.error(f"Funding create failed: {create}")
@@ -569,6 +566,8 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 
         # 1. при необходимости активируем адрес (0.11 TRX)
         if get_trx_balance(dep_addr) == 0:
+            log.info(f"🚚 Activation 1.10 TRX → {dep_addr}  "
+                    f"(deposit for user #{user_id})")
             if not fund_address(master_priv, master_addr, dep_addr):
                 log.error("❌ Не удалось активировать депозит-адрес (0.11 TRX)")
                 continue
@@ -581,7 +580,8 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             continue
 
         # 3. переводим USDT
-        txid = usdt_transfer(dep_priv, dep_addr, master_addr, usdt)
+        txid = safe_usdt_transfer(master_priv, master_addr,
+                          dep_priv, dep_addr, usdt)
         if not txid:
             log.error("❌ USDT transfer не прошёл")
             continue
@@ -598,6 +598,30 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 # ────────────────────────────────────────────────────────────────
 # Служебная обёртка для корректного оформления платежа в БД + чат
 # ────────────────────────────────────────────────────────────────
+
+# ─── helper: безопасный USDT-трансфер с 1 повтором ──────────────
+def safe_usdt_transfer(master_priv: str, master_addr: str,
+                       dep_priv: str, dep_addr: str,
+                       amount: float) -> Optional[str]:
+    """
+    • если на депозите < 0.5 TRX → докидываем 0.5 TRX
+    • 1-я попытка отправить USDT
+    • при BANDWIDTH_ERROR → спим 5 с и пробуем ещё раз
+    """
+    if get_trx_balance(dep_addr) < 500_000:                        # <0.5 TRX
+        if fund_address(master_priv, master_addr, dep_addr):
+            log.info(f"🚚 Extra 0.5 TRX → {dep_addr} (for bandwidth)")
+            time.sleep(3)
+
+    for i in (1, 2):
+        txid = usdt_transfer(dep_priv, dep_addr, master_addr, amount)
+        if txid:
+            return txid
+        log.warning("⌛ wait 5 s — ресурсы ещё не активировались")
+        time.sleep(5)
+    return None
+
+
 def _after_success_payment(
     user_id: int,
     telegram_id: int,
