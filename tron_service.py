@@ -832,7 +832,6 @@ def _after_success_payment(
                 telegram_id,
                 f"✅ Получено {amount_usdt:.2f} USDT.\n"
                 f"Ваша подписка продлена на {days} дн.\n"
-                f"Текущий баланс бота: {master_usdt:.2f} USDT."
             )
         )
     except Exception as e:
