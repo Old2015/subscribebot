@@ -335,32 +335,3 @@ def get_user_sub_info(user_id: int) -> str:
             else:
                 return "Подписка истекла."
 
-def insert_freeze_record(deposit_address: str,
-                         freeze_amount_sun: int,
-                         freeze_tx: str,
-                         resource: str = "ENERGY"):
-    """
-    Вставляет запись в freeze_records (deposit_address, freeze_amount_sun, freeze_tx, resource).
-    """
-    sql = """
-        INSERT INTO freeze_records (deposit_address, freeze_amount_sun, freeze_tx, resource)
-        VALUES (%s, %s, %s, %s)
-        RETURNING id
-    """
-    with _get_connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (deposit_address, freeze_amount_sun, freeze_tx, resource))
-        row = cur.fetchone()
-        conn.commit()
-        return row[0] if row else None
-
-def update_freeze_unfrozen(freeze_id: int, unfreeze_tx: str):
-    sql = """
-        UPDATE freeze_records
-           SET unfrozen = true,
-               unfreeze_tx = %s,
-               unfrozen_at = now()
-         WHERE id = %s
-    """
-    with _get_connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (unfreeze_tx, freeze_id))
-        conn.commit()            
