@@ -4,6 +4,4 @@ psycopg2
 qrcode
 Pillow
 apscheduler
-tronpy
 bip_utils
-timedelta

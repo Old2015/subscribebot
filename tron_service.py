@@ -219,27 +219,43 @@ def get_usdt_balance(addr_b58: str) -> float:
 def get_trx_balance(addr_b58: str, *, total: bool = False) -> int:
     """
     Возвращает баланс TRX в SUN (1 TRX = 1e6 SUN).
-
-    total = False  – свободный (spendable) баланс.
-    total = True   – raw balance из TronGrid (spend + frozen + pledge).
+    total=False  -> только свободный (spendable) баланс.
+    total=True   -> баланс + замороженные по Stake 1.0 + pledged по Stake 2.0.
     """
     try:
         acc = requests.post(
             f"{TRONGRID_API}/wallet/getaccount",
             json={"address": addr_b58, "visible": True},
-            headers=HEADERS, timeout=10
+            headers=HEADERS,
+            timeout=10
         ).json()
-
-        balance_spend = acc.get("balance", 0)
-        if total:
-            frozen = acc.get("frozen_balance_for_energy", 0) + acc.get("frozen_balance", 0)
-            pledge = acc.get("account_resource", {}).get("pledge_balance_for_energy", 0)
-            return balance_spend + frozen + pledge
-
-        return balance_spend
     except Exception as e:
         log.warning(f"get_trx_balance({addr_b58}) failed: {e}")
         return 0
+
+    spend = acc.get("balance", 0)  # свободный
+
+    if not total:
+        return spend
+
+    # Учёт Stake 1.0
+    frozen_bw = 0
+    if isinstance(acc.get("frozen"), list):
+        frozen_bw = sum(f.get("frozen_balance", 0) for f in acc["frozen"])
+    elif isinstance(acc.get("frozen"), dict):
+        frozen_bw = acc["frozen"].get("frozen_balance", 0)
+
+    frozen_energy_1 = 0
+    fr_eng = acc.get("account_resource", {}).get("frozen_balance_for_energy")
+    if fr_eng and isinstance(fr_eng, dict):
+        frozen_energy_1 = fr_eng.get("frozen_balance", 0)
+
+    # Учёт Stake 2.0 (Freeze V2)
+    pledge_energy = acc.get("account_resource", {}).get("pledge_balance_for_energy", 0)
+    pledge_bw     = acc.get("account_resource", {}).get("pledge_balance_for_bandwidth", 0)
+
+    total_sun = spend + frozen_bw + frozen_energy_1 + pledge_energy + pledge_bw
+    return total_sun
 
 # ────────────────────────────────────────────────────────────────
 # 7.  Генерация одноразового (ephemeral) адреса
@@ -494,15 +510,15 @@ async def print_master_balance_at_start(bot: Bot):
     # ← здесь получаем пару
     master_addr, priv = derive_master()
 
-    usdt  = get_usdt_balance(master_addr)
-    spend = get_trx_balance(master_addr) / 1e6           # свободный баланс в TRX
-    total = get_trx_balance(master_addr, total=True) / 1e6
-    freeze = max(0, total - spend)  # чтобы не уйти в отрицательные значения
+    usdt = get_usdt_balance(master_addr)
+    spend_sun = get_trx_balance(master_addr)
+    total_sun = get_trx_balance(master_addr, total=True)
+    frozen_sun = max(0, total_sun - spend_sun)
 
     log.info(
         f"Bot started ✅\n"
         f"Master address: {master_addr}\n"
-        f"Balance: {usdt:.2f} USDT | {freeze:.2f} TRX freeze / {total:.2f} TRX total"
+        f"Balance: {usdt:.2f} USDT | {frozen_sun/1e6:.2f} TRX freeze / {total_sun/1e6:.2f} TRX total"
     )
 
     if getattr(config, "ADMIN_CHAT_ID", None):
@@ -512,7 +528,7 @@ async def print_master_balance_at_start(bot: Bot):
                 f"🏁 *Бот запущен*\n"
                 f"`{master_addr}`\n"
                 f"*USDT*: {usdt:.2f}\n"
-                f"*TRX*:  {total:.2f} (в том числе заморожено {freeze:.2f})",
+                f"*TRX*:  {total_sun/1e6:.2f} (в том числе заморожено {frozen_sun/1e6:.2f})",
                 parse_mode="Markdown"
             )
         except Exception as e:
