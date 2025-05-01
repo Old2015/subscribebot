@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Tuple, Optional, Dict
 
 import config, supabase_client
+
+
 from aiogram import Bot
 from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
 
@@ -133,6 +135,46 @@ def sign_tx(tx: Dict, priv_hex: str) -> Dict:
 
     raise ValueError("Cannot build valid signature for owner_address")
 
+
+def sign_and_broadcast(raw_tx: dict, priv_hex: str) -> Optional[dict]:
+    """
+    1. Подписывает Tron-транзакцию 'raw_tx' приватным ключом 'priv_hex'.
+    2. Шлёт в /wallet/broadcasttransaction.
+    3. Возвращает словарь signed_tx, где будет поле "txid", 
+       либо None при ошибке.
+    """
+    # Подписываем (используем уже имеющуюся у вас sign_tx)
+    signed = sign_tx(raw_tx, priv_hex)
+    if not signed.get("signature"):
+        log.error("sign_and_broadcast: no signature in signed tx")
+        return None
+    
+    # Отправляем
+    br = requests.post(
+        f"{TRONGRID_API}/wallet/broadcasttransaction",
+        json=signed,
+        headers=HEADERS,
+        timeout=10
+    ).json()
+
+    if not br.get("result"):
+        # Ошибка при broadcast — логируем и возвращаем None
+        log.error(f"broadcasttransaction failed: {br}")
+        return None
+
+    # Обычно в ответе br['txid'] — кладём это же поле в signed
+    txid = br.get("txid")
+    if not txid:
+        log.error(f"broadcasttransaction: no txid in response: {br}")
+        return None
+    signed["txid"] = txid
+
+    # Возвращаем уже дополненный signed, 
+    # чтобы в вызывающей функции удобно взять signed["txid"]
+    return signed
+
+
+
 # ────────────────────────────────────────────────────────────────
 # 5.  Master-адрес из сид-фразы
 # ────────────────────────────────────────────────────────────────
@@ -216,149 +258,108 @@ def generate_ephemeral_address(user_id: int) -> Dict[str, str]:
     return {"address": addr, "private_key": priv.hex()}
 
 # ────────────────────────────────────────────────────────────────
-# 8.  Аренда энергии
+# 8.  Замораживаем ТРХ для перевода средств
 # ────────────────────────────────────────────────────────────────
-def trx_for_energy(units: int) -> int:          # Sun
+def trx_for_energy(units: int) -> int:          # Sun - нам нужна эта функция ???
     trx = math.ceil(units / ENERGY_PER_TRX)
     return trx * 1_000_000
 
-def rent_energy(master_priv: str, master_addr: str,
-                receiver: str, units: int = 65_000) -> int:
+def freeze_balance_v2(owner_address: str,
+                      owner_priv: str,
+                      receiver_address: str,
+                      amount_sun: int,
+                      resource="ENERGY") -> str:
     """
-    Арендует энергию. Возвращает фактически внесённый депозит в Sun
-    либо 0, если аренда не создана.
+    Замораживает 'amount_sun' на 3 дня, используя V2 (freeze v2).
+    Делегирует resource (ENERGY/BANDWIDTH) на 'receiver_address'.
+    Возвращает txid или "".
     """
+    freeze_body = {
+        "owner_address": owner_address,
+        "frozen_balance": amount_sun,
+        "frozen_duration": 3,
+        "resource_type": resource.upper(),    # "ENERGY" или "BANDWIDTH"
+        "receiver_address": receiver_address,
+        "visible": True
+    }
 
-    needed = trx_for_energy(units)
-    bal    = get_trx_balance(master_addr)
-    if bal < needed:
-        max_units = max(int(bal / 1_000_000 * ENERGY_PER_TRX) - 1000, 0)
-        if max_units < 15_000:
-            log.warning("rent_energy skipped: not enough TRX")
-            return 0
-        units  = max_units
-        needed = trx_for_energy(units)
-        log.info(f"rent_energy ↓ {units} units (deposit {needed/1e6:.2f} TRX)")
-
-
-    deposit = max(trx_for_energy(units), 1_000_000)      # ≥1 TRX
-    params  = (
-        b58_to_hex(receiver)[2:].ljust(64, "0") +
-        hex(deposit)[2:].rjust(64, "0") +
-        hex(RESOURCE_ENERGY)[2:].rjust(64, "0")
+    create_resp = requests.post(
+        f"{TRONGRID_API}/wallet/freezebalancev2",
+        json=freeze_body,
+        headers=HEADERS,
+        timeout=10
     )
+    if create_resp.status_code != 200:
+        log.error(f"freeze_balance_v2 create failed: {create_resp.text}")
+        return ""
+    
+    raw_tx = create_resp.json()
+    if "Error" in raw_tx:
+        log.error(f"freeze_balance_v2 error in raw_tx: {raw_tx['Error']}")
+        return ""
 
-    txo = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
-                        json={
-                            "contract_address": ENERGY_MARKET,        # base58
-                            "owner_address":    master_addr,          # base58
-                            "function_selector": "rentResource(address,uint256,uint256)",
-                            "parameter":         params,
-                            "call_value":        deposit,
-                            "fee_limit":         100_000_000,
-                            "visible":           True
-                        }, headers=HEADERS, timeout=10).json()
-    tx = txo.get("transaction")
-    if not tx:
-        log.error(f"rent_energy error: {base64.b64decode(txo.get('message','')).decode(errors='ignore')}")
-        return 0
+    # Подписываем и бродкастим (аналогично старому freeze_balance)
+    signed_tx = sign_and_broadcast(raw_tx, owner_priv)
+    if not signed_tx:
+        return ""
 
-    signed = sign_tx(tx, master_priv)
-    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
-                       json=signed, headers=HEADERS, timeout=10).json()
-    if not br.get("result"):
-        log.error(f"RentEnergy broadcast failed: {br}")
-        return 0
+    txid = signed_tx.get("txid", "")
+    if not txid:
+        log.error(f"freeze_balance_v2 no txid: {signed_tx}")
+        return ""
 
-    log.info(f"RentEnergy tx {br['txid']} ; залог {deposit/1e6:.2f} TRX")
-    return deposit             # вернём для последующего возврата
+    log.info(f"[freezeV2] {txid} => {amount_sun/1e6:.2f} TRX (resource={resource}, receiver={receiver_address})")
+    return txid
+
 
 # ────────────────────────────────────────────────────────────────
-# 9.  Возврат залога
+# 9.  Размораживаем средства ТРХ
 # ────────────────────────────────────────────────────────────────
-def fetch_pledge(payer: str, receiver: str) -> int:
+def unfreeze_balance_v2(owner_address: str,
+                        owner_priv: str,
+                        receiver_address: str,
+                        resource="ENERGY") -> str:
     """
-    Возвращает сумму залога (Sun) по связке payer→receiver.
-    Если залога нет или ответ контракта пустой, вернёт 0.
+    Размораживает все TRX (в V2) по указанному resource, делегированные на receiver_address.
+    Возвращает txid или "".
     """
-    fn = "rentInfo(address,address,uint256)"
-    param = (
-        b58_to_hex(payer)[2:].rjust(64, "0") +
-        b58_to_hex(receiver)[2:].rjust(64, "0") +
-        hex(RESOURCE_ENERGY)[2:].rjust(64, "0")
+    unfreeze_body = {
+        "owner_address": owner_address,
+        "resource_type": resource.upper(), 
+        "receiver_address": receiver_address,
+        "visible": True
+    }
+
+    create_resp = requests.post(
+        f"{TRONGRID_API}/wallet/unfreezebalancev2",
+        json=unfreeze_body,
+        headers=HEADERS,
+        timeout=10
     )
+    if create_resp.status_code != 200:
+        log.error(f"unfreeze_balance_v2 create failed: {create_resp.text}")
+        return ""
+    raw_tx = create_resp.json()
+    if "Error" in raw_tx:
+        log.error(f"unfreeze_balance_v2 error in raw_tx: {raw_tx['Error']}")
+        return ""
 
-    r = requests.post(
-        f"{TRONGRID_API}/wallet/triggerconstantcontract",
-        json={
-            "owner_address":    payer,
-            "contract_address": ENERGY_MARKET,
-            "function_selector": fn,
-            "parameter":         param,
-            "visible":           True
-        },
-        headers=HEADERS, timeout=10
-    ).json()
+    signed_tx = sign_and_broadcast(raw_tx, owner_priv)
+    if not signed_tx:
+        return ""
 
-    # 1) TronGrid может вернуть {"code":"OTHER_ERROR", ...}
-    if not r.get("result", {}).get("result", True):
-        msg = base64.b64decode(r.get("message", "")).decode(errors="ignore")
-        log.warning(f"fetch_pledge error {receiver}: {msg}")
-        return 0
+    txid = signed_tx.get("txid", "")
+    if not txid:
+        log.error(f"unfreeze_balance_v2 no txid: {signed_tx}")
+        return ""
 
-    hex_val = (r.get("constant_result") or [""])[0]
-    try:
-        return int(hex_val or "0", 16)
-    except ValueError:
-        return 0          # неожиданный формат ответа
-
-def return_resource(master_priv: str, master_addr: str,
-                    receiver: str, amount_sun: int) -> bool:
-    if amount_sun == 0:
-        log.info(f"Pledge for {receiver} already 0")
-        return True
-    param = (
-        b58_to_hex(receiver)[2:].ljust(64, "0") +
-        hex(amount_sun)[2:].rjust(64, "0") +
-        hex(RESOURCE_ENERGY)[2:].rjust(64, "0")
-    )
-    txo = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
-                        json={
-                            "contract_address": ENERGY_MARKET,
-                            "owner_address": master_addr,
-                            "function_selector": "returnResource(address,uint256,uint256)",
-                            "parameter": param,
-                            "fee_limit": 10_000_000,
-                            "visible": True
-                        }, headers=HEADERS, timeout=10).json()
-    tx = txo.get("transaction")
-    if not tx:
-        log.error(f"returnResource create error: "
-                  f"{base64.b64decode(txo.get('message','')).decode(errors='ignore')}")
-        return False
-    signed = sign_tx(tx, master_priv)
-    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
-                       json=signed, headers=HEADERS, timeout=10).json()
-    if not br.get("result"):
-        log.error(f"returnResource broadcast failed: {br}")
-        return False
-    log.info(f"returnResource tx {br['txid']} ; ожидается возврат {amount_sun/1e6:.2f} TRX")
-    return True
+    log.info(f"[unfreezeV2] success: {txid} (resource={resource}, receiver={receiver_address})")
+    return txid
 
 # ────────────────────────────────────────────────────────────────
 # 10.  TRC-20 USDT transfer
 # ────────────────────────────────────────────────────────────────
 
-def _wait_energy(addr, min_energy=20_000, timeout=90):
-    """Ждём, пока на addr появится min_energy или истечёт timeout (сек)."""
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        acc = requests.post(f"{TRONGRID_API}/wallet/getaccount",
-                            json={"address": addr, "visible":True}).json()
-        if acc.get("energy_usage", 0) >= min_energy:
-            return True                        # энергия пришла
-        time.sleep(6)                          # ≈ 1 блок
-    return False                               # не дождались
 
 def usdt_transfer(from_priv: str,
                   from_addr: str,
@@ -399,6 +400,40 @@ def usdt_transfer(from_priv: str,
     txid = br["txid"]                      # ← ➊ получили hash
     log.info(f"➜ USDT tx {txid}; energy OK, bandwidth OK")  # ← ➋ теперь можно писать
     return txid                            # ← ➌ и вернуть вызывающему
+
+# ────────────────────────────────────────────────────────────────
+# 10.а  Учёт в таблице freeze_records
+# ────────────────────────────────────────────────────────────────
+
+def record_freeze_in_db(
+    deposit_address: str,
+    freeze_amount_sun: int,
+    freeze_tx: str,
+    resource: str = "ENERGY"
+):
+    rec_id = supabase_client.insert_freeze_record(deposit_address, freeze_amount_sun, freeze_tx, resource)
+    log.info(f"[DB] freeze_records: inserted freeze_tx={freeze_tx} deposit={deposit_address} id={rec_id}")
+
+def record_unfreeze_in_db(freeze_id: int, unfreeze_tx: str):
+    """
+    Помечаем запись в freeze_records как 'unfrozen', указываем время (NOW()) и tx (unfreeze_tx).
+    """
+    sql = """
+        UPDATE freeze_records
+           SET unfrozen     = true,
+               unfreeze_tx  = %s,
+               unfrozen_at  = now()
+         WHERE id           = %s
+         RETURNING id
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (unfreeze_tx, freeze_id))
+        row = cur.fetchone()
+        conn.commit()
+
+        if row:
+            return row[0]
+        return None
 
 # ────────────────────────────────────────────────────────────────
 # 11.  Вспомогательные high-level функции для бота
@@ -460,13 +495,14 @@ async def print_master_balance_at_start(bot: Bot):
     master_addr, priv = derive_master()
 
     usdt  = get_usdt_balance(master_addr)
-    spend = get_trx_balance(master_addr) / 1e6
+    spend = get_trx_balance(master_addr) / 1e6           # свободный баланс в TRX
     total = get_trx_balance(master_addr, total=True) / 1e6
+    freeze = max(0, total - spend)  # чтобы не уйти в отрицательные значения
 
     log.info(
         f"Bot started ✅\n"
         f"Master address: {master_addr}\n"
-        f"Balance: {usdt:.2f} USDT | {spend:.2f} TRX spend / {total:.2f} TRX total"
+        f"Balance: {usdt:.2f} USDT | {freeze:.2f} TRX freeze / {total:.2f} TRX total"
     )
 
     if getattr(config, "ADMIN_CHAT_ID", None):
@@ -476,20 +512,13 @@ async def print_master_balance_at_start(bot: Bot):
                 f"🏁 *Бот запущен*\n"
                 f"`{master_addr}`\n"
                 f"*USDT*: {usdt:.2f}\n"
-                f"*TRX*:  {spend:.2f} из {total:.2f}",
+                f"*TRX*:  {total:.2f} (в том числе заморожено {freeze:.2f})",
                 parse_mode="Markdown"
             )
         except Exception as e:
             log.warning(f"Cannot notify admin: {e}")
 
-    # ── возвращаем старые залоги, если есть ────────────────────
-    pledges = total_master_pledge(master_addr)
-    returned = 0
-    for recv, sun in pledges.items():
-        if return_resource(priv, master_addr, recv, sun):
-            returned += sun
-    if returned:
-        log.info(f"🔄  Returned old pledges: {returned/1e6:.2f} TRX")
+    
 
                 
 
@@ -504,56 +533,53 @@ def create_qr_code(data: str) -> str:
 # ────────────────────────────────────────────────────────────────
 async def poll_trc20_transactions(bot: Bot) -> None:
     """
-    1. Раз в минуту читает все активные депозит-адреса из БД.
-    2. Первым делом пытается вернуть *старые* залоги TRX, если такие остались.
-    3. Для каждого депозита:
-       • если баланса USDT ещё нет   → пропуск;
-       • если на мастере < 6 TRX     → пробуем перевести USDT *без* аренды энергии;
-       • иначе                       → обычный путь: активация ↓ аренда ↓ перевод ↓ возврат залога.
-    4. После успешного платежа – обновление БД, продление подписки, уведомление.
+    1. Раз в N минут читает все активные депозит-адреса из БД.
+    2. Если на депозите найден баланс USDT:
+       - Если на мастере < 6 TRX => делаем перевод USDT напрямую (fallback).
+       - Иначе стандартная схема:
+         (a) Активируем депозит (~1.1 TRX), если нужно.
+         (b) Замораживаем 5 TRX (freezeBalance MASTER -> депозит), записываем в freeze_records.
+         (c) Ждём пару секунд.
+         (d) safe_usdt_transfer(...) → перевод USDT.
+       - После успешного платежа -> оформляем платёж, продлеваем подписку, очищаем адрес.
+    3. Если USDT = 0 -> пропуск.
+    4. Если депозиту > 24 ч, аннулируем счёт.
     """
+
     log.info("Start poll…")
     master_addr, master_priv = derive_master()
 
-    # ── ❶  Пытаемся вернуть ВСЕ старые залоги ───────────────────
-    for dep_b58, pledge_sun in total_master_pledge(master_addr).items():
-        if pledge_sun:
-            log.info(f"⚠️  Старый залог {pledge_sun/1e6:.2f} TRX на {dep_b58} — пытаюсь вернуть")
-            return_resource(master_priv, master_addr, dep_b58, pledge_sun)
-
-    # ── ❷  Обрабатываем актуальные депозиты пользователей ───────
-    now  = datetime.now()
+    now = datetime.now()
     rows = supabase_client.get_pending_deposits_with_privkey()
-
+    
     for row in rows:
         user_id     = row["id"]
         tg_id       = row["telegram_id"]
         dep_addr    = row["deposit_address"]
         dep_priv    = row["deposit_privkey"]
         created_at  = row["deposit_created_at"]
-# -- ❷-0  валидация пары priv/addr ------------------------
+
+        # Проверяем, соответствует ли приватник адресу
         try:
             addr_from_priv = pub_to_b58(
-                b'\x04' + ecdsa.SigningKey
-                            .from_string(bytes.fromhex(dep_priv),
-                                         curve=ecdsa.SECP256k1)
-                            .verifying_key
-                            .to_string())
+                b'\x04' + ecdsa.SigningKey.from_string(bytes.fromhex(dep_priv),
+                                                       curve=ecdsa.SECP256k1)
+                              .verifying_key
+                              .to_string()
+            )
         except Exception:
             log.error(f"⚠️  dep_priv испорчен ({dep_priv[:8]}…) – пропуск")
             continue
 
-        if addr_from_priv != dep_addr:          # ► continue теперь ВНУТРИ цикла
+        if addr_from_priv != dep_addr:
             log.error(f"⚠️  Приватный ключ не подходит к {dep_addr} – аннулирую")
             supabase_client.reset_deposit_address_and_privkey(user_id)
             continue
 
-
-        # пропуск невалидных строк
         if not dep_addr or not dep_priv:
             continue
 
-        # истёкло 24 ч — аннулируем счёт
+        # Если счёт старше 24 ч, аннулируем
         if (now - created_at).total_seconds() > 24*3600:
             supabase_client.reset_deposit_address_and_privkey(user_id)
             try:
@@ -562,59 +588,78 @@ async def poll_trc20_transactions(bot: Bot) -> None:
                 pass
             continue
 
-        # баланс USDT на депозит-адресе
+        # Проверяем баланс USDT
         usdt = get_usdt_balance(dep_addr)
         if usdt <= 0:
-            continue     # средств ещё нет
+            # Нет поступлений
+            continue
 
         log.info(f"🔎 Найдено {usdt:.2f} USDT на {dep_addr}")
 
-        # ── ❷-a  если TRX на мастере < 6 — пробуем «без аренды» ──
+        # Fallback, если мало TRX на мастере — переводим без freeze (прямой расход TRX на комиссию)
         master_trx_spend = get_trx_balance(master_addr) / 1e6
+        
         if master_trx_spend < 6:
-            log.warning(f"💧 Мало TRX на мастере ({master_trx_spend:.2f}). "
-                        f"Пробую перевод без аренды.")
-            txid = usdt_transfer(dep_priv, dep_addr, master_addr, usdt)
-            if not txid:
-                log.error("USDT transfer без аренды не прошёл")
-                continue
+            # Логируем
+            log.warning(
+                f"Внимание: на мастер-кошельке {master_addr} всего {master_trx_spend:.2f} TRX. "
+                f"Недостаточно для заморозки (нужно >=6 TRX)."
+            )
+            # (опционально) Шлём администратору предупреждение
+            if config.ADMIN_CHAT_ID:
+                try:
+                    await bot.send_message(
+                        config.ADMIN_CHAT_ID,
+                        f"⚠️ Остаток TRX на мастер-кошельке: {master_trx_spend:.2f}\n"
+                        f"Переводы от пользователей невозможны!"
+                    )
+                except Exception as e:
+                    log.warning(f"Cannot notify admin: {e}")
 
-            # success —— оформляем платёж, продлеваем подписку, очищаем адрес
-            _after_success_payment(user_id, tg_id, dep_addr, usdt, txid,
-                                   master_addr)
-            continue   # к следующему депозиту
+            # Пропускаем этот депозит
+            continue
 
-        # ── ❷-b  стандартный путь с арен­дой энергии ─────────────
 
-        # 1. при необходимости активируем адрес (0.11 TRX)
+
+            # Успешно перевели — оформляем платёж
+       
+        # === Стандартная схема с freeze ===
+
+        # (a) Активируем адрес, если на нём 0 TRX
         if get_trx_balance(dep_addr) == 0:
-            log.info(f"🚚 Activation 1.10 TRX → {dep_addr}  "
-                    f"(deposit for user #{user_id})")
+            log.info(f"🚚 Активируем депозит: +1.1 TRX → {dep_addr}  (user #{user_id})")
             if not fund_address(master_priv, master_addr, dep_addr):
-                log.error("❌ Не удалось активировать депозит-адрес (0.11 TRX)")
+                log.error("❌ Не удалось активировать депозит-адрес (1.1 TRX)")
                 continue
-            time.sleep(3)      # ждём включения блока
+            time.sleep(3)  # подождём 1-2 блока
 
-        # 2. арендуем энергию
-        pledge_before = rent_energy(master_priv, master_addr, dep_addr)
-        if pledge_before == 0:
-            log.error("❌ rent_energy не создана — пропуск")
+        # (b) Выполняем freezeBalance (5 TRX) c master -> dep_addr, чтобы был ENERGY
+        freeze_sun = 5_000_000  # 5 TRX
+        
+        freeze_txid = freeze_balance_v2(
+            owner_address=master_addr,
+            owner_priv=master_priv,
+            receiver_address=dep_addr,
+            amount_sun=freeze_sun,
+            resource="ENERGY"
+        )
+        if not freeze_txid:
+            log.error("❌ FreezeBalance не выполнен, пропускаем депозит.")
             continue
-        if not _wait_energy(dep_addr):
-            log.warning("⌛ energy still 0 – retry later")
-            continue
+        
+        # Запишем в базу freeze
+        record_freeze_in_db(dep_addr, freeze_sun, freeze_txid, "ENERGY")
 
-        # 3. переводим USDT
-        txid = safe_usdt_transfer(master_priv, master_addr,
-                          dep_priv, dep_addr, usdt)
+        # (c) Ждём появления энергии, упростим до ~3 секунд ожидания
+        time.sleep(3)
+
+        # (d) Переводим USDT (safe_usdt_transfer)
+        txid = safe_usdt_transfer(master_priv, master_addr, dep_priv, dep_addr, usdt)
         if not txid:
             log.error("❌ USDT transfer не прошёл")
             continue
 
-        # 4. возвращаем залог (можно вернуть ТУ ЖЕ сумму pledge_before)
-        return_resource(master_priv, master_addr, dep_addr, pledge_before)
-
-        # 5. после успеха — БД / подписка / уведомление
+        # После успеха — запись платежа, подписка, уведомление
         _after_success_payment(user_id, tg_id, dep_addr, usdt, txid, master_addr)
 
     log.info("Poll done.")
