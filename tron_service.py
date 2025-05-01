@@ -216,46 +216,58 @@ def get_usdt_balance(addr_b58: str) -> float:
 # ────────────────────────────────────────────────────────────────
 # 6-bis.  Баланс TRX (Sun)
 # ────────────────────────────────────────────────────────────────
-def get_trx_balance(addr_b58: str, *, total: bool = False) -> int:
+def get_trx_balance_v2(addr_b58: str) -> dict:
     """
-    Возвращает баланс TRX в SUN (1 TRX = 1e6 SUN).
-    total=False  -> только свободный (spendable) баланс.
-    total=True   -> баланс + замороженные по Stake 1.0 + pledged по Stake 2.0.
+    Возвращает структуру с балансами из /wallet/getaccountresourcev2
+    Для Freeze V2: поля типа 'frozen_balance_for_energy_v2' и т.д.
+    Пример результата:
+    {
+      'balance': 61089000000,
+      'frozen_balance_for_energy_v2': 10000000,
+      'frozen_balance_for_bandwidth_v2': 0,
+      'delegated_frozen_balance_for_energy_v2': 0,
+      ...
+    }
     """
     try:
-        acc = requests.post(
-            f"{TRONGRID_API}/wallet/getaccount",
+        resp = requests.post(
+            f"{TRONGRID_API}/wallet/getaccountresourcev2",
             json={"address": addr_b58, "visible": True},
             headers=HEADERS,
             timeout=10
-        ).json()
+        )
+        acc_res = resp.json()
+        return acc_res
     except Exception as e:
-        log.warning(f"get_trx_balance({addr_b58}) failed: {e}")
-        return 0
+        log.warning(f"get_trx_balance_v2({addr_b58}) failed: {e}")
+        return {}
+    
+def get_total_balance_v2(addr_b58: str) -> (int, int):
+    """
+    Возвращает (spend_sun, total_sun) для Freeze V2.
+    spend_sun = свободный баланс
+    total_sun = spend_sun + вся заморозка (frozen V2)
+    """
+    # (A) старый запрос, чтобы узнать spend (свободный)
+    acc = requests.post(
+        f"{TRONGRID_API}/wallet/getaccount",
+        json={"address": addr_b58, "visible": True},
+        headers=HEADERS,
+        timeout=10
+    ).json()
+    spend_sun = acc.get("balance", 0)
 
-    spend = acc.get("balance", 0)  # свободный
+    # (B) запрос к /wallet/getaccountresourcev2 для freeze V2
+    acc_res2 = get_trx_balance_v2(addr_b58)  # функция из предыдущего примера
 
-    if not total:
-        return spend
+    v2_energy   = acc_res2.get("frozen_balance_for_energy_v2", 0)
+    v2_bw       = acc_res2.get("frozen_balance_for_bandwidth_v2", 0)
+    # Если есть делегированные (входящие/исходящие) —
+    # delegated_frozen_balance_for_energy_v2, delegated_frozen_balance_for_bandwidth_v2
+    # но обычно это 0, если вы не делегировали кому-то ещё
 
-    # Учёт Stake 1.0
-    frozen_bw = 0
-    if isinstance(acc.get("frozen"), list):
-        frozen_bw = sum(f.get("frozen_balance", 0) for f in acc["frozen"])
-    elif isinstance(acc.get("frozen"), dict):
-        frozen_bw = acc["frozen"].get("frozen_balance", 0)
-
-    frozen_energy_1 = 0
-    fr_eng = acc.get("account_resource", {}).get("frozen_balance_for_energy")
-    if fr_eng and isinstance(fr_eng, dict):
-        frozen_energy_1 = fr_eng.get("frozen_balance", 0)
-
-    # Учёт Stake 2.0 (Freeze V2)
-    pledge_energy = acc.get("account_resource", {}).get("pledge_balance_for_energy", 0)
-    pledge_bw     = acc.get("account_resource", {}).get("pledge_balance_for_bandwidth", 0)
-
-    total_sun = spend + frozen_bw + frozen_energy_1 + pledge_energy + pledge_bw
-    return total_sun
+    total_sun = spend_sun + v2_energy + v2_bw
+    return spend_sun, total_sun    
 
 # ────────────────────────────────────────────────────────────────
 # 7.  Генерация одноразового (ephemeral) адреса
@@ -507,13 +519,15 @@ def total_master_pledge(master_b58: str) -> Dict[str, int]:
 # 11-bis.  Сообщаем баланс мастера при старте бота
 # ────────────────────────────────────────────────────────────────
 async def print_master_balance_at_start(bot: Bot):
-    # ← здесь получаем пару
     master_addr, priv = derive_master()
 
+    # 1) Смотрим USDT
     usdt = get_usdt_balance(master_addr)
-    spend_sun = get_trx_balance(master_addr)
-    total_sun = get_trx_balance(master_addr, total=True)
+
+    # 2) Смотрим TRX (freeze v2)
+    spend_sun, total_sun = get_total_balance_v2(master_addr)
     frozen_sun = max(0, total_sun - spend_sun)
+
 
     log.info(
         f"Bot started ✅\n"
