@@ -218,56 +218,121 @@ def get_usdt_balance(addr_b58: str) -> float:
 # ────────────────────────────────────────────────────────────────
 def get_trx_balance_v2(addr_b58: str) -> dict:
     """
-    Возвращает структуру с балансами из /wallet/getaccountresourcev2
-    Для Freeze V2: поля типа 'frozen_balance_for_energy_v2' и т.д.
-    Пример результата:
+    Возвращает структуру с балансами по схеме Freeze V2,
+    БЕЗ вызова /wallet/getaccountresourcev2 (т.к. он 405 на tron api).
+    
+    Пример возвращаемого словаря:
     {
-      'balance': 61089000000,
-      'frozen_balance_for_energy_v2': 10000000,
-      'frozen_balance_for_bandwidth_v2': 0,
-      'delegated_frozen_balance_for_energy_v2': 0,
-      ...
+      "balance": 51088950,   # свободный баланс (Sun)
+      "frozen_balance_for_energy_v2": 10000000,
+      "frozen_balance_for_bandwidth_v2": 0,
+      "delegated_frozen_balance_for_energy_v2": 0,
+      "delegated_frozen_balance_for_bandwidth_v2": 0
     }
     """
+
+    result = {
+        "balance": 0,
+        "frozen_balance_for_energy_v2": 0,
+        "frozen_balance_for_bandwidth_v2": 0,
+        "delegated_frozen_balance_for_energy_v2": 0,    # Пока ставим 0
+        "delegated_frozen_balance_for_bandwidth_v2": 0  # Пока ставим 0
+    }
+
     try:
         resp = requests.post(
-            f"{TRONGRID_API}/wallet/getaccountresourcev2",
+            f"{TRONGRID_API}/wallet/getaccount",
             json={"address": addr_b58, "visible": True},
             headers=HEADERS,
             timeout=10
         )
-        acc_res = resp.json()
-        return acc_res
+        acc = resp.json()
+        # Свободный баланс
+        result["balance"] = acc.get("balance", 0)
+
+        # Ищем frozenV2 (массив)
+        frozen_v2_list = acc.get("frozenV2", [])
+        # Пример: [
+        #   {"amount":10000000},
+        #   {"type":"ENERGY"},
+        #   {"type":"TRON_POWER"}
+        # ]
+
+        # Логика: обычно там 1 объект с "amount" и 1-2 объекта с "type"
+        # Но может быть несколько freeze-блоков. Собираем сумму amounts.
+        # А если тип "ENERGY" => считаем это frozen_balance_for_energy_v2.
+        # Если тип "BANDWIDTH" => frozen_balance_for_bandwidth_v2.
+
+        # Чтобы обработать универсально, пройдёмся по списку в паре.
+        # Tron отдает [{"amount": N}, {"type":"ENERGY"}, {"type":"TRON_POWER"}].
+        # "TRON_POWER" - это внутренняя метка. Главное - ENERGY или BANDWIDTH.
+        # Если freeze на BW, обычно {"type":"BANDWIDTH"}.
+
+        frozen_amount = 0
+        freeze_type = None
+
+        # Сканируем items посекционно
+        # (т.к. Tron обычно идёт: {"amount": ...}, {"type":"ENERGY"}, {"type":"TRON_POWER"})
+        i = 0
+        length = len(frozen_v2_list)
+        while i < length:
+            item = frozen_v2_list[i]
+            if "amount" in item:
+                # Запоминаем временно
+                frozen_amount = item["amount"]
+                # Смотрим следующий элемент, если есть
+                if i+1 < length:
+                    t_item = frozen_v2_list[i+1]
+                    if "type" in t_item:
+                        freeze_type = t_item["type"]  # ENERGY / BANDWIDTH / TRON_POWER
+                        i += 2
+                    else:
+                        i += 1
+                else:
+                    i += 1
+            elif "type" in item:
+                freeze_type = item["type"]
+                i += 1
+            else:
+                i += 1
+
+            # Теперь, если freeze_type = "ENERGY", frozen_amount -> frozen_balance_for_energy_v2
+            # Если "BANDWIDTH" -> frozen_balance_for_bandwidth_v2
+            # Если "TRON_POWER", это просто маркер, ignore
+
+            if freeze_type == "ENERGY":
+                result["frozen_balance_for_energy_v2"] += frozen_amount
+            elif freeze_type == "BANDWIDTH":
+                result["frozen_balance_for_bandwidth_v2"] += frozen_amount
+            # TRON_POWER можно игнорировать, либо логировать
+            # сбрасываем temp
+            frozen_amount = 0
+            freeze_type = None
+
+        # delegated_frozen_... могли бы тоже искать, но TronGrid обычно 
+        # отдаёт delegated freeze иначе. Если нужно — доработать.
+
     except Exception as e:
         log.warning(f"get_trx_balance_v2({addr_b58}) failed: {e}")
-        return {}
-    
+
+    return result
+
+
+
 def get_total_balance_v2(addr_b58: str) -> (int, int):
     """
-    Возвращает (spend_sun, total_sun) для Freeze V2.
-    spend_sun = свободный баланс
-    total_sun = spend_sun + вся заморозка (frozen V2)
+    Возвращает (spend_sun, total_sun) для Freeze V2:
+      spend_sun = свободный баланс (Sun)
+      total_sun = spend_sun + замороженные в ENERGY/BANDWIDTH (V2)
     """
-    # (A) старый запрос, чтобы узнать spend (свободный)
-    acc = requests.post(
-        f"{TRONGRID_API}/wallet/getaccount",
-        json={"address": addr_b58, "visible": True},
-        headers=HEADERS,
-        timeout=10
-    ).json()
-    spend_sun = acc.get("balance", 0)
+    acc_res2 = get_trx_balance_v2(addr_b58)
+    spend_sun = acc_res2["balance"]
 
-    # (B) запрос к /wallet/getaccountresourcev2 для freeze V2
-    acc_res2 = get_trx_balance_v2(addr_b58)  # функция из предыдущего примера
-
-    v2_energy   = acc_res2.get("frozen_balance_for_energy_v2", 0)
-    v2_bw       = acc_res2.get("frozen_balance_for_bandwidth_v2", 0)
-    # Если есть делегированные (входящие/исходящие) —
-    # delegated_frozen_balance_for_energy_v2, delegated_frozen_balance_for_bandwidth_v2
-    # но обычно это 0, если вы не делегировали кому-то ещё
+    v2_energy = acc_res2["frozen_balance_for_energy_v2"]
+    v2_bw     = acc_res2["frozen_balance_for_bandwidth_v2"]
 
     total_sun = spend_sun + v2_energy + v2_bw
-    return spend_sun, total_sun    
+    return spend_sun, total_sun 
 
 # ────────────────────────────────────────────────────────────────
 # 7.  Генерация одноразового (ephemeral) адреса
@@ -470,7 +535,10 @@ def fund_address(master_priv: str, master_addr: str, dest_addr: str) -> bool:
     """Переводит 1.1 TRX (1 TRX — активация, 0.1 TRX — запас)."""
     amount = MIN_ACTIVATION_SUN + FUND_EXTRA_SUN        # 1 100 000 Sun
 
-    if get_trx_balance(master_addr) < amount + 500_000:
+    info_master = get_trx_balance_v2(master_addr)
+    spend_sun   = info_master["balance"]  # свободный баланс
+
+    if spend_sun < amount + 500_000:
         log.error("Мало TRX на мастер-кошельке для активации депозита")
         return False
 
@@ -627,7 +695,11 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         log.info(f"🔎 Найдено {usdt:.2f} USDT на {dep_addr}")
 
         # Fallback, если мало TRX на мастере — переводим без freeze (прямой расход TRX на комиссию)
-        master_trx_spend = get_trx_balance(master_addr) / 1e6
+        master_info = get_trx_balance_v2(master_addr)
+        master_trx_spend = master_info["balance"] / 1e6  # свободный
+        # или, если нужен total:
+        # total_sun = master_info["balance"] + master_info["frozen_balance_for_energy_v2"] + ...
+        # master_trx_spend = total_sun / 1e6
         
         if master_trx_spend < 6:
             # Логируем
@@ -656,7 +728,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         # === Стандартная схема с freeze ===
 
         # (a) Активируем адрес, если на нём 0 TRX
-        if get_trx_balance(dep_addr) == 0:
+        if get_trx_balance_v2(dep_addr) == 0:
             log.info(f"🚚 Активируем депозит: +1.1 TRX → {dep_addr}  (user #{user_id})")
             if not fund_address(master_priv, master_addr, dep_addr):
                 log.error("❌ Не удалось активировать депозит-адрес (1.1 TRX)")
@@ -708,7 +780,7 @@ def safe_usdt_transfer(master_priv: str, master_addr: str,
     • 1-я попытка отправить USDT
     • при BANDWIDTH_ERROR → спим 5 с и пробуем ещё раз
     """
-    if get_trx_balance(dep_addr) < 500_000:                        # <0.5 TRX
+    if get_trx_balance_v2(dep_addr)["balance"] < 500_000:                        # <0.5 TRX
         if fund_address(master_priv, master_addr, dep_addr):
             log.info(f"🚚 Extra 0.5 TRX → {dep_addr} (for bandwidth)")
             time.sleep(3)
