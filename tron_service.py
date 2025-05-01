@@ -458,7 +458,7 @@ def usdt_transfer(from_priv: str,
                   from_addr: str,
                   to_addr:   str,
                   amount:    float,
-                  fee_limit: int = 8_000_000) -> Optional[str]:
+                  fee_limit: int = 20_000_000) -> Optional[str]:
     """
     Переводит `amount` USDT с `from_addr` на `to_addr`.
     • fee_limit — лимит TRX на комиссию (Sun). По-умолчанию 8 TRX.
@@ -475,7 +475,7 @@ def usdt_transfer(from_priv: str,
                             "owner_address": from_addr,
                             "function_selector": "transfer(address,uint256)",
                             "parameter": param,
-                            "fee_limit": 8_000_000,
+                            "fee_limit": fee_limit,
                             "visible": True
                         }, headers=HEADERS, timeout=10).json()
     tx = txo.get("transaction")
@@ -735,8 +735,8 @@ async def poll_trc20_transactions(bot: Bot) -> None:
                 continue
             time.sleep(3)  # подождём 1-2 блока
 
-        # (b) Выполняем freezeBalance (5 TRX) c master -> dep_addr, чтобы был ENERGY
-        freeze_sun = 5_000_000  # 5 TRX
+        # (b) Выполняем freezeBalance (15 TRX) c master -> dep_addr, чтобы был ENERGY
+        freeze_sun = 15_000_000  # 15 TRX
         
         freeze_txid = freeze_balance_v2(
             owner_address=master_addr,
@@ -762,7 +762,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             continue
 
         # После успеха — запись платежа, подписка, уведомление
-        _after_success_payment(user_id, tg_id, dep_addr, usdt, txid, master_addr)
+        _after_success_payment(user_id, tg_id, dep_addr, usdt, txid, master_addr, bot)
 
     log.info("Poll done.")
 
@@ -800,7 +800,8 @@ def _after_success_payment(
     dep_addr: str,
     amount_usdt: float,
     txid: str,
-    master_addr: str
+    master_addr: str,
+    bot: Bot  # <-- добавили параметр
 ) -> None:
     """
     1. create_payment    → записываем транзакцию
