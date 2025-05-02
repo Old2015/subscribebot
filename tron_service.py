@@ -28,7 +28,7 @@ FUND_EXTRA_SUN     = 100_000             # небольшой запас на fe
 USDT_CONTRACT  = config.TRC20_USDT_CONTRACT or "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 # ────────────────────────────────────────────────────────────────
-# helper: единая обёртка над tron_post с ретраями
+# helper: единая обёртка над requests.post с ретраями
 # ────────────────────────────────────────────────────────────────
 def tron_post(
         url: str,
@@ -38,18 +38,19 @@ def tron_post(
         retries: int = 3
 ) -> dict:
     """
-    Выполняет POST к TronGrid с автоматическим-ми повторами.
-    Возвращает dict ({} при неуспехе), чтобы вызывающий код не падал.
+    POST к TronGrid с автоматическими повторами.
+    • headers добавляются внутри;
+    • возвращает уже готовый dict ({} при ошибке).
     """
     for attempt in range(1, retries + 1):
         try:
-            r = tron_post(url, json=json, headers=HEADERS, timeout=timeout)
+            r = requests.post(url, json=json, headers=HEADERS, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             log.warning(f"tron_post {url} HTTP {r.status_code}")
         except Exception as e:
             log.warning(f"tron_post {url} fail {attempt}/{retries}: {e}")
-        time.sleep(0.3 * attempt)    # back-off
+        time.sleep(0.4 * attempt)          # back-off
     return {}
 
 
@@ -171,12 +172,8 @@ def sign_and_broadcast(raw_tx: dict, priv_hex: str) -> Optional[dict]:
         return None
     
     # Отправляем
-    br = tron_post(
-        f"{TRONGRID_API}/wallet/broadcasttransaction",
-        json=signed,
-        headers=HEADERS,
-        timeout=10
-    ).json()
+    br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction", json=signed)
+
 
     if not br.get("result"):
         # Ошибка при broadcast — логируем и возвращаем None
@@ -227,7 +224,7 @@ def get_usdt_balance(addr_b58: str) -> float:
         "visible": True
     }
     r = tron_post(f"{TRONGRID_API}/wallet/triggerconstantcontract",
-                      json=payload, headers=HEADERS, timeout=10).json()
+                      json=payload)
     if not r.get("result", {}).get("result", True):
         log.warning(f"constantcontract error: {base64.b64decode(r.get('message','')).decode(errors='ignore')}")
         return 0.0
@@ -261,13 +258,8 @@ def get_trx_balance_v2(addr_b58: str) -> dict:
     }
 
     try:
-        resp = tron_post(
-            f"{TRONGRID_API}/wallet/getaccount",
-            json={"address": addr_b58, "visible": True},
-            headers=HEADERS,
-            timeout=10
-        )
-        acc = resp.json()
+        
+        acc = tron_post(f"{TRONGRID_API}/wallet/getaccount",json={"address": addr_b58, "visible": True})
         # Свободный баланс
         result["balance"] = acc.get("balance", 0)
 
@@ -416,7 +408,7 @@ def usdt_transfer(from_priv: str,
                             "parameter": param,
                             "fee_limit": fee_limit,
                             "visible": True
-                        }, headers=HEADERS, timeout=10).json()
+                        })
     tx = txo.get("transaction")
     if not tx:
         log.error(f"USDT transfer create error: "
@@ -424,7 +416,7 @@ def usdt_transfer(from_priv: str,
         return None
     signed = sign_tx(tx, from_priv)
     br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
-                       json=signed, headers=HEADERS, timeout=10).json()
+                       json=signed)
     if not br.get("result"):
         log.error(f"USDT transfer broadcast failed: {br}")
         return None
@@ -456,7 +448,7 @@ def fund_address(master_priv: str, master_addr: str, dest_addr: str) -> bool:
                                "to_address":    dest_addr,     # base58
                                "amount":        amount,
                                "visible":       True
-                           }, headers=HEADERS, timeout=10).json()
+                           })
 
     if "txID" not in create:
         log.error(f"Funding create failed: {create}")
@@ -464,7 +456,7 @@ def fund_address(master_priv: str, master_addr: str, dest_addr: str) -> bool:
 
     signed = sign_tx(create, master_priv)
     br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
-                       json=signed, headers=HEADERS, timeout=10).json()
+                       json=signed)
     if not br.get("result"):
         log.error(f"Funding broadcast failed: {br}")
         return False
@@ -483,7 +475,7 @@ def send_trx_to_deposit(master_priv: str, master_addr: str, dest_addr: str, amou
             "to_address": dest_addr,
             "amount": amount_sun,
             "visible": True
-        }, headers=HEADERS, timeout=10).json()
+        })
 
     if "txID" not in create:
         log.error(f"send_trx_to_deposit create failed: {create}")
@@ -491,7 +483,7 @@ def send_trx_to_deposit(master_priv: str, master_addr: str, dest_addr: str, amou
 
     signed = sign_tx(create, master_priv)
     br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
-        json=signed, headers=HEADERS, timeout=10).json()
+        json=signed)
     if not br.get("result"):
         log.error(f"send_trx_to_deposit broadcast failed: {br}")
         return False
@@ -510,7 +502,7 @@ def return_leftover_trx(dep_priv: str, dep_addr: str, master_addr: str, amount_s
             "to_address": master_addr,
             "amount": amount_sun,
             "visible": True
-        }, headers=HEADERS, timeout=10).json()
+        })
 
     if "txID" not in tx:
         log.error(f"return_leftover_trx: создание транзакции не удалось: {tx}")
@@ -518,7 +510,7 @@ def return_leftover_trx(dep_priv: str, dep_addr: str, master_addr: str, amount_s
 
     signed = sign_tx(tx, dep_priv)
     br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
-        json=signed, headers=HEADERS, timeout=10).json()
+        json=signed)
     if not br.get("result"):
         log.error(f"return_leftover_trx: отправка не удалась: {br}")
         return None
@@ -676,14 +668,24 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 
         log.info(f"🔎 Найдено {usdt:.2f} USDT на {dep_addr}")
  
-        trx_needed = 30_000_000
-        if get_trx_balance_v2(master_addr)["balance"] < trx_needed:
-            # денег мало – шлём лишь 1.1 TRX
-            trx_needed = 1_100_000
+        # --- нужно ровно 30 TRX свободным балансом ---
+        trx_needed = 30_000_000            # 30 TRX в Sun
+        trx_free   = get_trx_balance_v2(master_addr)["balance"]
 
-        send_txid = send_trx_to_deposit(master_priv, master_addr, dep_addr, trx_needed)
-        if not send_txid:
-            log.error("❌ Не удалось пополнить депозит на 30 TRX")
+        if trx_free < trx_needed:
+            log.error(
+               f"Недостаточно TRX: свободно {trx_free/1e6:.2f}, нужно 30.00 – депозит пропущен."
+            )
+    # уведомляем админа и переходим к следующему депозиту
+            try:
+                await bot.send_message(
+            config.ADMIN_CHAT_ID,
+            f"🚫 Пополнение депозита {dep_addr} пропущено – "
+            f"на мастере лишь {trx_free/1e6:.2f} TRX.\n"
+            f"Пополните кошелёк минимум до 30 TRX."
+                 )
+            except Exception:
+                pass
             continue
         await asyncio.sleep(3)              # не блокируем event-loop
        
@@ -696,7 +698,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 
         # возвращаем остатки ТРХ с депозита на мастер
         leftover = get_trx_balance_v2(dep_addr)["balance"]
-
+        ret_txid = None 
         if leftover > 100_000:
             ret_txid = return_leftover_trx(dep_priv, dep_addr, master_addr,
                                        leftover-100_000)

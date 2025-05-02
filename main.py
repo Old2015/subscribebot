@@ -11,6 +11,9 @@ from subscription import subscription_router
 from tron_service import poll_trc20_transactions, print_master_balance_at_start
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+
+log = logging.getLogger(__name__)
+
 def _log_freeze_summary():
     """Считает общее кол-во замороженных TRX и кол-во таких записей, выводит в лог."""
     resp_sum = supabase_client.table("freeze_records").select("*")\
