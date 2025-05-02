@@ -84,7 +84,13 @@ async def scheduled_daily_unfreeze():
 
 async def scheduled_tron_poll():
     """Вызывается каждые CHECK_INTERVAL_MIN минут для опроса сети Tron."""
-    await poll_trc20_transactions(bot)
+    try:
+        await poll_trc20_transactions(bot)
+    except Exception as e:
+        log.exception("poll_trc20_transactions crashed: %s", e)
+        if getattr(config, "ADMIN_CHAT_ID", None):
+            await bot.send_message(config.ADMIN_CHAT_ID,
+                f"❌ Ошибка опроса Tron: {e!s}")    
 
 async def scheduled_daily_job():
     """Вызывается в DAILY_ANALYSIS_TIME для ежедневных задач (чистим триал, шлём отчёт)."""

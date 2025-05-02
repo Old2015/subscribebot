@@ -26,11 +26,32 @@ MIN_ACTIVATION_SUN = 1_000_000           # 1 TRX – минимум для со�
 FUND_EXTRA_SUN     = 100_000             # небольшой запас на fee (0.1 TRX)
 
 USDT_CONTRACT  = config.TRC20_USDT_CONTRACT or "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-ENERGY_MARKET  = "TU2MJ5Veik1LRAgjeSzEdvmDYx7mefJZvd"          # JustLend DAO
-RESOURCE_ENERGY = 1                                            # 1 = Energy
 
-# Цена энергии (units per 1 TRX). Желательно хранить в .env
-ENERGY_PER_TRX = int(os.getenv("ENERGY_PER_TRX", "15000"))
+# ────────────────────────────────────────────────────────────────
+# helper: единая обёртка над tron_post с ретраями
+# ────────────────────────────────────────────────────────────────
+def tron_post(
+        url: str,
+        *,
+        json: Optional[dict] = None,
+        timeout: int = 10,
+        retries: int = 3
+) -> dict:
+    """
+    Выполняет POST к TronGrid с автоматическим-ми повторами.
+    Возвращает dict ({} при неуспехе), чтобы вызывающий код не падал.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            r = tron_post(url, json=json, headers=HEADERS, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            log.warning(f"tron_post {url} HTTP {r.status_code}")
+        except Exception as e:
+            log.warning(f"tron_post {url} fail {attempt}/{retries}: {e}")
+        time.sleep(0.3 * attempt)    # back-off
+    return {}
+
 
 # ────────────────────────────────────────────────────────────────
 # 2.  Keccak-256 (без зависимости от openssl 3.0)
@@ -150,7 +171,7 @@ def sign_and_broadcast(raw_tx: dict, priv_hex: str) -> Optional[dict]:
         return None
     
     # Отправляем
-    br = requests.post(
+    br = tron_post(
         f"{TRONGRID_API}/wallet/broadcasttransaction",
         json=signed,
         headers=HEADERS,
@@ -205,7 +226,7 @@ def get_usdt_balance(addr_b58: str) -> float:
         "parameter": addr_hex,
         "visible": True
     }
-    r = requests.post(f"{TRONGRID_API}/wallet/triggerconstantcontract",
+    r = tron_post(f"{TRONGRID_API}/wallet/triggerconstantcontract",
                       json=payload, headers=HEADERS, timeout=10).json()
     if not r.get("result", {}).get("result", True):
         log.warning(f"constantcontract error: {base64.b64decode(r.get('message','')).decode(errors='ignore')}")
@@ -240,7 +261,7 @@ def get_trx_balance_v2(addr_b58: str) -> dict:
     }
 
     try:
-        resp = requests.post(
+        resp = tron_post(
             f"{TRONGRID_API}/wallet/getaccount",
             json={"address": addr_b58, "visible": True},
             headers=HEADERS,
@@ -350,6 +371,21 @@ def generate_ephemeral_address(user_id: int) -> Dict[str, str]:
     log.info(f"Создан депозитный адрес {addr} (user={user_id})")
     return {"address": addr, "private_key": priv.hex()}
 
+# ────────────────────────────────────────────────────────────────
+# 8.  Мониторинг баланса мастера (предупреждаем, если < 50 TRX)
+# ────────────────────────────────────────────────────────────────
+
+async def notify_if_low_trx(bot: Bot, master_addr: str):
+    spend_sun = get_trx_balance_v2(master_addr)["balance"]
+    if spend_sun < 50_000_000:                     # 50 TRX
+        try:
+            await bot.send_message(
+                config.ADMIN_CHAT_ID,
+                f"⚠️ На мастер-кошельке осталось {spend_sun/1e6:.2f} TRX. "
+                f"Пожалуйста, пополните его, иначе бот не сможет оплачивать комиссии."
+            )
+        except Exception:
+            log.warning("Cannot notify admin about low TRX")
 
 
 # ────────────────────────────────────────────────────────────────
@@ -372,7 +408,7 @@ def usdt_transfer(from_priv: str,
         b58_to_hex(to_addr)[2:].rjust(64, "0") +
         hex(value)[2:].rjust(64, "0")
     )
-    txo = requests.post(f"{TRONGRID_API}/wallet/triggersmartcontract",
+    txo = tron_post(f"{TRONGRID_API}/wallet/triggersmartcontract",
                         json={
                             "contract_address": USDT_CONTRACT,
                             "owner_address": from_addr,
@@ -387,7 +423,7 @@ def usdt_transfer(from_priv: str,
                   f"{base64.b64decode(txo.get('message','')).decode(errors='ignore')}")
         return None
     signed = sign_tx(tx, from_priv)
-    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+    br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
                        json=signed, headers=HEADERS, timeout=10).json()
     if not br.get("result"):
         log.error(f"USDT transfer broadcast failed: {br}")
@@ -414,7 +450,7 @@ def fund_address(master_priv: str, master_addr: str, dest_addr: str) -> bool:
         log.error("Мало TRX на мастер-кошельке для активации депозита")
         return False
 
-    create = requests.post(f"{TRONGRID_API}/wallet/createtransaction",
+    create = tron_post(f"{TRONGRID_API}/wallet/createtransaction",
                            json={
                                "owner_address": master_addr,   # base58
                                "to_address":    dest_addr,     # base58
@@ -427,7 +463,7 @@ def fund_address(master_priv: str, master_addr: str, dest_addr: str) -> bool:
         return False
 
     signed = sign_tx(create, master_priv)
-    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+    br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
                        json=signed, headers=HEADERS, timeout=10).json()
     if not br.get("result"):
         log.error(f"Funding broadcast failed: {br}")
@@ -441,7 +477,7 @@ def send_trx_to_deposit(master_priv: str, master_addr: str, dest_addr: str, amou
     """
     Переводит указанное количество TRX с мастера на депозит.
     """
-    create = requests.post(f"{TRONGRID_API}/wallet/createtransaction",
+    create = tron_post(f"{TRONGRID_API}/wallet/createtransaction",
         json={
             "owner_address": master_addr,
             "to_address": dest_addr,
@@ -454,7 +490,7 @@ def send_trx_to_deposit(master_priv: str, master_addr: str, dest_addr: str, amou
         return False
 
     signed = sign_tx(create, master_priv)
-    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+    br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
         json=signed, headers=HEADERS, timeout=10).json()
     if not br.get("result"):
         log.error(f"send_trx_to_deposit broadcast failed: {br}")
@@ -468,7 +504,7 @@ def return_leftover_trx(dep_priv: str, dep_addr: str, master_addr: str, amount_s
     """
     Переводит TRX с депозита обратно на мастер.
     """
-    tx = requests.post(f"{TRONGRID_API}/wallet/createtransaction",
+    tx = tron_post(f"{TRONGRID_API}/wallet/createtransaction",
         json={
             "owner_address": dep_addr,
             "to_address": master_addr,
@@ -481,7 +517,7 @@ def return_leftover_trx(dep_priv: str, dep_addr: str, master_addr: str, amount_s
         return None
 
     signed = sign_tx(tx, dep_priv)
-    br = requests.post(f"{TRONGRID_API}/wallet/broadcasttransaction",
+    br = tron_post(f"{TRONGRID_API}/wallet/broadcasttransaction",
         json=signed, headers=HEADERS, timeout=10).json()
     if not br.get("result"):
         log.error(f"return_leftover_trx: отправка не удалась: {br}")
@@ -524,7 +560,8 @@ async def print_master_balance_at_start(bot: Bot):
     spend_sun, total_sun = get_total_balance_v2(master_addr)
     frozen_sun = max(0, total_sun - spend_sun)
 
-
+    # мониторинг остатка TRX при запуске
+    await notify_if_low_trx(bot, master_addr)
     log.info(
         f"Bot started ✅\n"
         f"Master address: {master_addr}\n"
@@ -577,7 +614,8 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 
     now = datetime.now()
     rows = supabase_client.get_pending_deposits_with_privkey()
-    
+    await notify_if_low_trx(bot, master_addr)    
+
     for row in rows:
         user_id     = row["id"]
         tg_id       = row["telegram_id"]
@@ -614,36 +652,66 @@ async def poll_trc20_transactions(bot: Bot) -> None:
                 pass
             continue
 
-        # Проверяем баланс USDT
-        usdt = get_usdt_balance(dep_addr)
+
+        # ❶  истёкло 24 ч  – ПЕРЕД СБРОСОМ проверяем, не пришли ли USDT
+        expired = (now - created_at).total_seconds() > 24*3600
+        usdt    = get_usdt_balance(dep_addr)           # запросим единожды
+
+        if expired and usdt == 0:
+            supabase_client.reset_deposit_address_and_privkey(user_id)
+            try:
+                await bot.send_message(tg_id,
+                    "⏰ Счёт истёк (24 ч) и средств не поступило. "
+                    "Сформируйте новый адрес, если нужно.")
+            except Exception:
+                pass
+            continue      # к следующему депозиту
+
+        # если адрес просрочен, но деньги ПРИШЛИ – продолжаем обработку ↓
+
+        
         if usdt <= 0:
             # Нет поступлений
             continue
 
         log.info(f"🔎 Найдено {usdt:.2f} USDT на {dep_addr}")
-        fund_success = send_trx_to_deposit(master_priv, master_addr, dep_addr, 30_000_000)
-        if not fund_success:
-            log.error("❌ Не удалось перевести 30 TRX на депозит")
+ 
+        trx_needed = 30_000_000
+        if get_trx_balance_v2(master_addr)["balance"] < trx_needed:
+            # денег мало – шлём лишь 1.1 TRX
+            trx_needed = 1_100_000
+
+        send_txid = send_trx_to_deposit(master_priv, master_addr, dep_addr, trx_needed)
+        if not send_txid:
+            log.error("❌ Не удалось пополнить депозит на 30 TRX")
             continue
-        time.sleep(3)  # ждём, чтобы TRX дошли
-
-
+        await asyncio.sleep(3)              # не блокируем event-loop
        
 
         # (d) Переводим USDT (safe_usdt_transfer)
-        txid = safe_usdt_transfer(master_priv, master_addr, dep_priv, dep_addr, usdt)
+        txid = await safe_usdt_transfer(master_priv, master_addr, dep_priv, dep_addr, usdt)
         if not txid:
             log.error("❌ USDT transfer не прошёл")
             continue
 
         # возвращаем остатки ТРХ с депозита на мастер
         leftover = get_trx_balance_v2(dep_addr)["balance"]
-        if leftover > 100_000:  # например, >0.1 TRX
-            return_leftover_trx(dep_priv, dep_addr, master_addr, leftover - 100_000)
-        
+
+        if leftover > 100_000:
+            ret_txid = return_leftover_trx(dep_priv, dep_addr, master_addr,
+                                       leftover-100_000)
+        if not ret_txid:
+            # ❗ возврат не прошёл – НЕ стираем ключ и шлём админу
+            await bot.send_message(config.ADMIN_CHAT_ID,
+                f"⚠️ Не удалось вернуть {leftover/1e6:.2f} TRX "
+                f"с {dep_addr}. Ключ сохранён, будет повторена попытка.")
+            continue   # пропускаем reset/завершение
+
         # После успеха — запись платежа, подписка, уведомление
         _after_success_payment(user_id, tg_id, dep_addr, usdt, txid, master_addr, bot)
-
+    # после полного успеха удаляем ключ (как и раньше)
+        supabase_client.reset_deposit_address_and_privkey(user_id)
+         
     log.info("Poll done.")
 
 
@@ -652,7 +720,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 # ────────────────────────────────────────────────────────────────
 
 # ─── helper: безопасный USDT-трансфер с 1 повтором ──────────────
-def safe_usdt_transfer(master_priv: str, master_addr: str,
+async def safe_usdt_transfer(master_priv: str, master_addr: str,
                        dep_priv: str, dep_addr: str,
                        amount: float) -> Optional[str]:
     """
@@ -665,7 +733,7 @@ def safe_usdt_transfer(master_priv: str, master_addr: str,
         if txid:
             return txid
         log.warning("⌛ Ожидание 5 сек — возможно, ресурсы ещё не активировались")
-        time.sleep(5)
+        await asyncio.sleep(5)
     return None
 
 

@@ -213,9 +213,7 @@ async def cmd_subscribe(message: types.Message):
         )
         return
 
-    # Сохраняем
-    supabase_client.update_deposit_info(user['id'], address)
-    supabase_client.update_deposit_created_at(user['id'], now)
+   
 
     # Генерируем QR
     qr_path = create_qr_code(address)

@@ -104,20 +104,7 @@ def create_user_with_trial(telegram_id: int, username: str, trial_days: int):
                 return dict(zip(cols, row))
             return None
 
-def update_deposit_info(user_id: int, address: str):
-    """
-    Сохраняем адрес для оплаты (TRC20/ETH) в таблице 'users'.
-    deposit_address = address
-    (приватный ключ не храним!)
-    """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE users
-                   SET deposit_address = %s
-                 WHERE id = %s
-            """, (address, user_id))
-            conn.commit()
+
 
 
 
@@ -224,22 +211,27 @@ def create_payment(user_id: int, txhash: str, amount_usdt: float, days_added: in
             conn.commit()
 
 
-def update_deposit_created_at(user_id: int, created_at: datetime):
+def update_deposit_address(user_id: int, address: str, priv_hex: str | None):
     """
-    Сохраняем только время выдачи адреса (deposit_created_at)
-    — для совместимости со старым кодом subscription.py.
+    Обновляем (или создаём) адрес депозита.
+    Если priv_hex=None  – приватный ключ не меняем.
     """
     with _get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE users
-               SET deposit_created_at = %s
-             WHERE id = %s
-            """,
-            (created_at, user_id),
-        )
-        conn.commit()
-
+        if priv_hex is None:
+            cur.execute("""
+                UPDATE users
+                   SET deposit_address = %s,
+                       deposit_created_at = NOW()
+                 WHERE id = %s
+            """, (address, user_id))
+        else:
+            cur.execute("""
+                UPDATE users
+                   SET deposit_address = %s,
+                       deposit_privkey   = %s,
+                       deposit_created_at = NOW()
+                 WHERE id = %s
+            """, (address, priv_hex, user_id))
 
 def update_payment_days(user_id: int, amount_usdt: float, days_added: int) -> None:
     """
