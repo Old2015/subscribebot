@@ -8,7 +8,7 @@ from config import bot, CHECK_INTERVAL_MIN, DAILY_ANALYSIS_TIME
 import supabase_client
 from start import start_router
 from subscription import subscription_router
-from tron_service import poll_trc20_transactions, print_master_balance_at_start, unfreeze_balance_v2, record_unfreeze_in_db
+from tron_service import poll_trc20_transactions, print_master_balance_at_start
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 def _log_freeze_summary():

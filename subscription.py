@@ -198,7 +198,7 @@ async def cmd_subscribe(message: types.Message):
             )
             return
         else:
-            supabase_client.reset_deposit_address(user['id'])
+            supabase_client.reset_deposit_address_and_privkey(user['id'])
 
     # Генерация нового адреса (если используете счётчик):
     # new_index = supabase_client.increment_deposit_index(user["id"])

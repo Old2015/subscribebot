@@ -1,0 +1,99 @@
+@@
+-# ────────────────────────────────────────────────────────────────
+-# 8.  Аренда энергии
+-# ────────────────────────────────────────────────────────────────
+-...            # ВЕСЬ блок функций rent_energy / fetch_pledge / return_resource
+-               # и константы ENERGY_MARKET, RESOURCE_ENERGY, ENERGY_PER_TRX
+-               #        ⟶  ПОЛНОСТЬЮ УДАЛЯЕМ
+-
++# ────────────────────────────────────────────────────────────────
++# 8.  Мониторинг баланса мастера (предупреждаем, если < 50 TRX)
++# ────────────────────────────────────────────────────────────────
++
++async def notify_if_low_trx(bot: Bot, master_addr: str):
++    spend_sun = get_trx_balance_v2(master_addr)["balance"]
++    if spend_sun < 50_000_000:                     # 50 TRX
++        try:
++            await bot.send_message(
++                config.ADMIN_CHAT_ID,
++                f"⚠️ На мастер-кошельке осталось {spend_sun/1e6:.2f} TRX. "
++                f"Пожалуйста, пополните его, иначе бот не сможет оплачивать комиссии."
++            )
++        except Exception:
++            log.warning("Cannot notify admin about low TRX")
+
+
+@@  def poll_trc20_transactions(bot: Bot) -> None:
+-        # истёкло 24 ч — аннулируем счёт
+-        if (now - created_at).total_seconds() > 24*3600:
+-            supabase_client.reset_deposit_address_and_privkey(user_id)
+-            try:
+-                await bot.send_message(tg_id, "Счёт истёк (24 ч). Сформируйте новый.")
+-            except Exception:
+-                pass
+-            continue
++        # ❶  истёкло 24 ч  – ПЕРЕД СБРОСОМ проверяем, не пришли ли USDT
++        expired = (now - created_at).total_seconds() > 24*3600
++        usdt    = get_usdt_balance(dep_addr)           # запросим единожды
++
++        if expired and usdt == 0:
++            supabase_client.reset_deposit_address_and_privkey(user_id)
++            try:
++                await bot.send_message(tg_id,
++                    "⏰ Счёт истёк (24 ч) и средств не поступило. "
++                    "Сформируйте новый адрес, если нужно.")
++            except Exception:
++                pass
++            continue      # к следующему депозиту
++
++        # если адрес просрочен, но деньги ПРИШЛИ – продолжаем обработку ↓
+ 
+-        # баланс USDT на депозит-адресе
+-        usdt = get_usdt_balance(dep_addr)
++        # баланс уже считан выше
+         if usdt <= 0:
+             continue     # средств ещё нет
+@@  # Пополнение TRX на депозит
+-    send_txid = send_trx_to_deposit(master_priv, master_addr, dep_addr)
+-    if not send_txid:
+-        log.error("❌ Не удалось перевести 30 TRX на депозит")
+-        continue
+-    time.sleep(3)
++    trx_needed = 30_000_000
++    if get_trx_balance_v2(master_addr)["balance"] < trx_needed:
++        # денег мало – шлём лишь 1.1 TRX
++        trx_needed = 1_100_000
++
++    send_txid = send_trx_to_deposit(master_priv, master_addr, dep_addr, trx_needed)
++    if not send_txid:
++        log.error("❌ Не удалось пополнить депозит TRX")
++        continue
++    await asyncio.sleep(3)              # не блокируем event-loop
+
+
+@@  # возврат leftover-TRX
+-    return_leftover_trx(dep_priv, dep_addr, master_addr, leftover-100_000)
++    if leftover > 100_000:
++        ret_txid = return_leftover_trx(dep_priv, dep_addr, master_addr,
++                                       leftover-100_000)
++        if not ret_txid:
++            # ❗ возврат не прошёл – НЕ стираем ключ и шлём админу
++            await bot.send_message(config.ADMIN_CHAT_ID,
++                f"⚠️ Не удалось вернуть {leftover/1e6:.2f} TRX "
++                f"с {dep_addr}. Ключ сохранён, будет повторена попытка.")
++            continue   # пропускаем reset/завершение
+
+@@  # после успешного платежа
+-    _after_success_payment(...)
+-    continue
++    _after_success_payment(...)
++    # после полного успеха удаляем ключ (как и раньше)
++    supabase_client.reset_deposit_address_and_privkey(user_id)
++    continue
+
+
+-    time.sleep(5)
++    await asyncio.sleep(5)
+
+
+
