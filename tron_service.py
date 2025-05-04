@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Tuple, Optional, Dict
 
 import config, supabase_client
+from collections import defaultdict
 
 
 from aiogram import Bot
@@ -26,6 +27,9 @@ MIN_ACTIVATION_SUN = 1_000_000           # 1 TRX – минимум для со�
 FUND_EXTRA_SUN     = 100_000             # небольшой запас на fee (0.1 TRX)
 
 USDT_CONTRACT  = config.TRC20_USDT_CONTRACT or "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+# депозит → число подряд неудачных попыток USDT-перевода
+_usdt_error_cnt: defaultdict[str, int] = defaultdict(int)
+
 
 # ────────────────────────────────────────────────────────────────
 # helper: единая обёртка над requests.post с ретраями
@@ -52,6 +56,26 @@ def tron_post(
             log.warning(f"tron_post {url} fail {attempt}/{retries}: {e}")
         time.sleep(0.4 * attempt)          # back-off
     return {}
+
+async def wait_for_balance(addr_b58: str,
+                           min_sun: int,
+                           timeout: int = config.WAIT_DEPOSIT_CONFIRM_SEC) -> bool:
+    """Ждём, пока на addr будет ≥ min_sun (используем get_trx_balance_v2)."""
+    for _ in range(max(1, timeout // 3)):
+        bal = get_trx_balance_v2(addr_b58)["balance"]
+        if bal >= min_sun:
+            return True
+        await asyncio.sleep(3)
+    return False
+
+def calc_fee_limit(master_addr: str) -> int:
+    """
+    Если на мастере нет USDT → первый перевод, берём ‘дорогой’ лимит,
+    иначе обычный. Порог/значения задаются в config.
+    """
+    return (config.TRC20_USDT_FEE_LIMIT_FIRST
+            if get_usdt_balance(master_addr) == 0
+            else config.TRC20_USDT_FEE_LIMIT)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -385,16 +409,13 @@ async def notify_if_low_trx(bot: Bot, master_addr: str):
 # ────────────────────────────────────────────────────────────────
 
 
-def usdt_transfer(from_priv: str,
-                  from_addr: str,
-                  to_addr:   str,
-                  amount:    float,
-                  fee_limit: int = 20_000_000) -> Optional[str]:
-    """
-    Переводит `amount` USDT с `from_addr` на `to_addr`.
-    • fee_limit — лимит TRX на комиссию (Sun). По-умолчанию 8 TRX.
-    Возвращает txid либо None, если broadcast не прошёл.
-    """
+   
+def usdt_transfer(from_priv: str, from_addr: str,
+                  to_addr: str, amount: float,
+                  fee_limit: Optional[int] = None) -> Optional[str]:
+
+    fee_limit = fee_limit or config.TRC20_USDT_FEE_LIMIT
+
     value = int(round(amount * 1_000_000))
     param = (
         b58_to_hex(to_addr)[2:].rjust(64, "0") +
@@ -422,7 +443,15 @@ def usdt_transfer(from_priv: str,
         return None
 
     txid = br["txid"]                      # ← ➊ получили hash
-    log.info(f"➜ USDT tx {txid}; energy OK, bandwidth OK")  # ← ➋ теперь можно писать
+
+    # ── логируем расход ресурсов
+    info = tron_post(f"{TRONGRID_API}/wallet/gettransactioninfobyid",
+                     json={"value": txid})
+    fee_bw  = info.get("fee", 0)                            # Sun
+    energy  = info.get("receipt", {}).get("energy_usage_total", 0)
+    fee_en  = info.get("receipt", {}).get("energy_fee", 0)  # Sun
+    log.info(f"➜ USDT tx {txid}; bandwidthFee={fee_bw/1e6:.6f} TRX "
+             f"| energy={energy} (burn {fee_en/1e6:.6f} TRX)")  # ← ➋ теперь можно писать
     return txid                            # ← ➌ и вернуть вызывающему
 
 
@@ -590,130 +619,108 @@ async def poll_trc20_transactions(bot: Bot) -> None:
     """
     1. Раз в N минут читает все активные депозит-адреса из БД.
     2. Если на депозите найден баланс USDT:
-       - Если на мастере < 6 TRX => делаем перевод USDT напрямую (fallback).
-       - Иначе стандартная схема:
-         (a) Активируем депозит (~1.1 TRX), если нужно.
-         
-         (c) Ждём пару секунд.
-         (d) safe_usdt_transfer(...) → перевод USDT.
-       - После успешного платежа -> оформляем платёж, продлеваем подписку, очищаем адрес.
-    3. Если USDT = 0 -> пропуск.
-    4. Если депозиту > 24 ч, аннулируем счёт.
+       • Пополняем депозит TRX (30 TRX) --▶ ждём подтверждение.
+       • Динамически считаем fee_limit и пытаемся перевести USDT
+         (2 попытки через safe_usdt_transfer).
+       • После успешного USDT-транса возвращаем оставшиеся TRX.
+    3. Если депозиту > 24 ч и средств нет — адрес сбрасываем.
     """
 
     log.info("Start poll…")
     master_addr, master_priv = derive_master()
+    await notify_if_low_trx(bot, master_addr)
 
-    now = datetime.now()
+    now  = datetime.now()
     rows = supabase_client.get_pending_deposits_with_privkey()
-    await notify_if_low_trx(bot, master_addr)    
 
     for row in rows:
-        user_id     = row["id"]
-        tg_id       = row["telegram_id"]
-        dep_addr    = row["deposit_address"]
-        dep_priv    = row["deposit_privkey"]
-        created_at  = row["deposit_created_at"]
+        user_id    = row["id"]
+        tg_id      = row["telegram_id"]
+        dep_addr   = row["deposit_address"]
+        dep_priv   = row["deposit_privkey"]
+        created_at = row["deposit_created_at"]
 
-        # Проверяем, соответствует ли приватник адресу
+        # ——— валидация ключа/адреса ————————————————
         try:
-            addr_from_priv = pub_to_b58(
-                b'\x04' + ecdsa.SigningKey.from_string(bytes.fromhex(dep_priv),
-                                                       curve=ecdsa.SECP256k1)
-                              .verifying_key
-                              .to_string()
-            )
+            addr_from_priv = pub_to_b58(b'\x04' +
+                ecdsa.SigningKey.from_string(bytes.fromhex(dep_priv),
+                                             curve=ecdsa.SECP256k1)
+                     .verifying_key.to_string())
         except Exception:
             log.error(f"⚠️  dep_priv испорчен ({dep_priv[:8]}…) – пропуск")
             continue
-
         if addr_from_priv != dep_addr:
             log.error(f"⚠️  Приватный ключ не подходит к {dep_addr} – аннулирую")
             supabase_client.reset_deposit_address_and_privkey(user_id)
             continue
 
-        if not dep_addr or not dep_priv:
-            continue
-
-        # Если счёт старше 24 ч, аннулируем
-        if (now - created_at).total_seconds() > 24*3600:
-            supabase_client.reset_deposit_address_and_privkey(user_id)
-            try:
-                await bot.send_message(tg_id, "Счёт истёк (24 ч). Сформируйте новый.")
-            except Exception:
-                pass
-            continue
-
-
-        # ❶  истёкло 24 ч  – ПЕРЕД СБРОСОМ проверяем, не пришли ли USDT
+        # ——— срок жизни адреса ————————————————
         expired = (now - created_at).total_seconds() > 24*3600
-        usdt    = get_usdt_balance(dep_addr)           # запросим единожды
+        usdt    = get_usdt_balance(dep_addr)
 
         if expired and usdt == 0:
             supabase_client.reset_deposit_address_and_privkey(user_id)
             try:
                 await bot.send_message(tg_id,
-                    "⏰ Счёт истёк (24 ч) и средств не поступило. "
+                    "⏰ Счёт истёк (24 ч) и средств не поступило.\n"
                     "Сформируйте новый адрес, если нужно.")
             except Exception:
                 pass
-            continue      # к следующему депозиту
-
-        # если адрес просрочен, но деньги ПРИШЛИ – продолжаем обработку ↓
-
-        
-        if usdt <= 0:
-            # Нет поступлений
             continue
+        if usdt <= 0:
+            continue          # движемся к следующему депозиту
 
         log.info(f"🔎 Найдено {usdt:.2f} USDT на {dep_addr}")
- 
-        # --- нужно ровно 30 TRX свободным балансом ---
-        trx_needed = 30_000_000            # 30 TRX в Sun
-        trx_free   = get_trx_balance_v2(master_addr)["balance"]
 
-        if trx_free < trx_needed:
-            log.error(
-               f"Недостаточно TRX: свободно {trx_free/1e6:.2f}, нужно 30.00 – депозит пропущен."
-            )
-    # уведомляем админа и переходим к следующему депозиту
-            try:
-                await bot.send_message(
-            config.ADMIN_CHAT_ID,
-            f"🚫 Пополнение депозита {dep_addr} пропущено – "
-            f"на мастере лишь {trx_free/1e6:.2f} TRX.\n"
-            f"Пополните кошелёк минимум до 30 TRX."
-                 )
-            except Exception:
-                pass
+        # ───────────────────────────────────────────────────
+        # 1. Пополняем депозит 30 TRX (если нужно меньше - 1 TRX)
+        trx_needed = 30_000_000
+        if get_trx_balance_v2(master_addr)["balance"] < trx_needed:
+            trx_needed = 1_100_000
+
+        send_ok = send_trx_to_deposit(master_priv, master_addr,
+                                      dep_addr, trx_needed)
+        if not send_ok:
+            log.error("❌ Не удалось отправить TRX на депозит")
             continue
-        await asyncio.sleep(3)              # не блокируем event-loop
-       
 
-        # (d) Переводим USDT (safe_usdt_transfer)
-        txid = await safe_usdt_transfer(master_priv, master_addr, dep_priv, dep_addr, usdt)
+        # 2. Ждём подтверждение, что TRX дошли
+        ok = await wait_for_balance(dep_addr, trx_needed)
+        if not ok:
+            log.error("TRX ещё не зачислены – перевод USDT отложен")
+            continue
+
+        # 3. Считаем динамический fee_limit
+        fee_limit = calc_fee_limit(master_addr)
+
+        # 4. Пытаемся перевести USDT (safe)
+        txid = await safe_usdt_transfer(dep_priv, dep_addr,
+                                        master_addr, usdt,
+                                        fee_limit)
         if not txid:
-            log.error("❌ USDT transfer не прошёл")
+            log.error("❌ USDT transfer не прошёл (safe_usdt_transfer)")
             continue
 
-        # возвращаем остатки ТРХ с депозита на мастер
-        leftover = get_trx_balance_v2(dep_addr)["balance"]
-        ret_txid = None 
+        # ───────────────────────────────────────────────────
+        # 5. Возвращаем остаток TRX
+        leftover  = get_trx_balance_v2(dep_addr)["balance"]
+        ret_txid  = None
         if leftover > 100_000:
-            ret_txid = return_leftover_trx(dep_priv, dep_addr, master_addr,
-                                       leftover-100_000)
+            ret_txid = return_leftover_trx(dep_priv, dep_addr,
+                                           master_addr, leftover-100_000)
         if not ret_txid:
-            # ❗ возврат не прошёл – НЕ стираем ключ и шлём админу
             await bot.send_message(config.ADMIN_CHAT_ID,
                 f"⚠️ Не удалось вернуть {leftover/1e6:.2f} TRX "
-                f"с {dep_addr}. Ключ сохранён, будет повторена попытка.")
-            continue   # пропускаем reset/завершение
+                f"с {dep_addr}. Ключ сохранён, повторим позже.")
+            continue   # оставляем адрес, чтобы попытаться ещё раз
 
-        # После успеха — запись платежа, подписка, уведомление
-        _after_success_payment(user_id, tg_id, dep_addr, usdt, txid, master_addr, bot)
-    # после полного успеха удаляем ключ (как и раньше)
+        # 6. Записываем платёж и уведомляем пользователя
+        _after_success_payment(user_id, tg_id, dep_addr,
+                               usdt, txid, master_addr, bot)
+
+        # 7. Очищаем депозит-ключ
         supabase_client.reset_deposit_address_and_privkey(user_id)
-         
+
     log.info("Poll done.")
 
 
@@ -722,20 +729,24 @@ async def poll_trc20_transactions(bot: Bot) -> None:
 # ────────────────────────────────────────────────────────────────
 
 # ─── helper: безопасный USDT-трансфер с 1 повтором ──────────────
-async def safe_usdt_transfer(master_priv: str, master_addr: str,
-                       dep_priv: str, dep_addr: str,
-                       amount: float) -> Optional[str]:
-    """
-    Пытается перевести USDT с депозита на мастер-кошелёк.
-    • Выполняет 1-2 попытки на случай временных проблем.
-    • Предполагается, что на депозите уже есть ~30 TRX.
-    """
-    for i in (1, 2):
-        txid = usdt_transfer(dep_priv, dep_addr, master_addr, amount)
+async def safe_usdt_transfer(dep_priv: str, dep_addr: str,
+                             master_addr: str, amount: float,
+                             fee_limit: int) -> Optional[str]:
+    for attempt in (1, 2):
+        txid = usdt_transfer(dep_priv, dep_addr, master_addr,
+                             amount, fee_limit=fee_limit)
         if txid:
+            _usdt_error_cnt[dep_addr] = 0          # сброс счётчика
             return txid
-        log.warning("⌛ Ожидание 5 сек — возможно, ресурсы ещё не активировались")
-        await asyncio.sleep(5)
+
+        _usdt_error_cnt[dep_addr] += 1
+        log.warning("⌛ Попытка %s не удалась, ждём 6 сек.",
+                    attempt)
+        await asyncio.sleep(6)
+
+    # если дошли сюда → обе попытки провалились
+    if _usdt_error_cnt[dep_addr] >= config.MAX_USDT_ERRORS:
+        await _notify_admin(dep_addr, amount, _usdt_error_cnt[dep_addr])
     return None
 
 
@@ -758,7 +769,7 @@ def _after_success_payment(
     supabase_client.create_payment(user_id, txid, amount_usdt, 0)
 
     # (2) подписка
-    days = math.ceil(amount_usdt * config.DAYS_FOR_100_USDT / config.SUBSCRIPTION_PRICE_USDT)
+    days = math.ceil(amount_usdt * config.DAYS_FOR_USDT / config.SUBSCRIPTION_PRICE_USDT)
     supabase_client.update_payment_days(user_id, amount_usdt, days)
     supabase_client.apply_subscription_extension(user_id, days)
 
@@ -781,3 +792,15 @@ def _after_success_payment(
         )
     except Exception as e:
         log.warning(f"Cannot notify user {telegram_id}: {e}")
+
+async def _notify_admin(dep_addr: str, amount: float, fails: int):
+    if not getattr(config, "ADMIN_CHAT_ID", None):
+        return
+    msg = (f"⚠️ Депозит {dep_addr} уже {fails}-раз не смог переслать "
+           f"{amount:.2f} USDT из-за нехватки ресурсов.\n"
+           "Требуется проверка вручную.")
+    try:
+        from main import bot   # импортируем лениво, чтобы не циклично
+        await bot.send_message(config.ADMIN_CHAT_ID, msg)
+    except Exception:
+        pass

@@ -19,7 +19,21 @@ TRC20_USDT_CONTRACT = os.getenv("TRC20_USDT_CONTRACT")
 TRON_API_KEY = os.getenv("TRON_API_KEY")
 
 SUBSCRIPTION_PRICE_USDT = float(os.getenv("SUBSCRIPTION_PRICE_USDT", "100"))
-DAYS_FOR_100_USDT = int(os.getenv("DAYS_FOR_100_USDT", "30"))
+DAYS_FOR_USDT = int(os.getenv("DAYS_FOR_USDT", "30"))
+
+# ─── TRON / комиссии ───────────────────────────────────────────
+# “дорогой” лимит – первый перевод на адрес, где ещё нет USDT  
+TRC20_USDT_FEE_LIMIT_FIRST  = 40_000_000      # 40 TRX в Sun  
+# “обычный” лимит – повторные переводы  
+TRC20_USDT_FEE_LIMIT        = 25_000_000      # 25 TRX в Sun  
+
+# сколько секунд ждём, пока 30 TRX «дойдут» до депозита  
+WAIT_DEPOSIT_CONFIRM_SEC    = 25              # ≈ 1 блок
+
+# после скольких подряд ошибок перевода уведомлять админа  
+MAX_USDT_ERRORS             = 3
+
+
 
 # Новая переменная
 FREE_TRIAL_GLOBAL_END = os.getenv("FREE_TRIAL_GLOBAL_END", "")
