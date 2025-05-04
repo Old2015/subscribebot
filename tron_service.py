@@ -5,7 +5,7 @@ tron_service.py — работа с TRON через TronGrid (без tronpy/Tron
 """
 
 import os, math, time, base64, logging, tempfile, requests, qrcode, base58, ecdsa, hashlib, asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Tuple, Optional, Dict
 
 import config, supabase_client
@@ -23,6 +23,7 @@ HEADERS      = {"TRON-PRO-API-KEY": config.TRON_API_KEY} if config.TRON_API_KEY 
 MIN_ACTIVATION_SUN = 1_000_000           # 1 TRX – минимум для создания аккаунта
 FUND_EXTRA_SUN     = 100_000             # 0.1 TRX запас
 USDT_CONTRACT      = config.TRC20_USDT_CONTRACT or "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+MIN_LEFTOVER_SUN = 1_000_000  # 1 TRX — оставляем на будущие комиссии
 
 # ────────────────────────────────────────────────────────────────
 # helper: POST с ретраями
@@ -151,6 +152,59 @@ def get_trx_balance(addr:str)->int:
     return acc.get("balance",0)
 
 # ────────────────────────────────────────────────────────────────
+# 6.  Баланс TRX с учётом Freeze V2
+# ────────────────────────────────────────────────────────────────
+def get_trx_balance_v2(addr_b58: str) -> dict:
+    """
+    Возвращает словарь:
+      balance                     – свободные TRX (Sun)
+      frozen_balance_for_energy   – TRX, замороженные под ENERGY (Sun)
+      frozen_balance_for_bandwidth– TRX, замороженные под BANDWIDTH (Sun)
+    Этого достаточно для get_total_balance_v2.
+    """
+    data = tron_post(f"{TRONGRID_API}/wallet/getaccount",
+                     json={"address": addr_b58, "visible": True})
+
+    out = {"balance":               data.get("balance", 0),
+           "frozen_balance_for_energy_v2":    0,
+           "frozen_balance_for_bandwidth_v2": 0}
+
+    for item in data.get("frozenV2", []):
+        # TronGrid даёт объекты вида {"amount":N} и/или {"type":"ENERGY"}
+        if item.get("type") == "ENERGY":
+            out["frozen_balance_for_energy_v2"] += item.get("amount", 0)
+        elif item.get("type") == "BANDWIDTH":
+            out["frozen_balance_for_bandwidth_v2"] += item.get("amount", 0)
+
+    return out
+
+
+# ────────────────────────────────────────────────────────────────
+# 6-bis.  Итоговый баланс TRX (свободный + замороженный V2)
+# ────────────────────────────────────────────────────────────────
+from typing import Tuple
+
+def get_total_balance_v2(addr_b58: str) -> Tuple[int, int]:
+    """
+    Возвращает кортеж (spend_sun, total_sun):
+
+    • spend_sun – свободный баланс (Sun)  
+    • total_sun – spend_sun + замороженные ENERGY/BANDWIDTH (V2)
+
+    Используется при старте бота и для мониторинга.
+    """
+    acc = get_trx_balance_v2(addr_b58)
+
+    spend_sun = acc["balance"]
+    frozen    = (
+        acc.get("frozen_balance_for_energy_v2", 0) +
+        acc.get("frozen_balance_for_bandwidth_v2", 0)
+    )
+    return spend_sun, spend_sun + frozen
+
+
+
+# ────────────────────────────────────────────────────────────────
 # 7.  TRC-20 transfer
 # ────────────────────────────────────────────────────────────────
 def usdt_transfer(priv_from:str, addr_from:str,
@@ -167,6 +221,31 @@ def usdt_transfer(priv_from:str, addr_from:str,
         log.error("create transfer failed"); return None
     return sign_and_broadcast(tx, priv_from)
 
+
+# ────────────────────────────────────────────────────────────────
+# 7-bis.  Оповещение, если на мастере мало TRX
+# ────────────────────────────────────────────────────────────────
+async def notify_if_low_trx(bot: Bot, master_addr: str,
+                            threshold_sun: int = 50_000_000) -> None:
+    """
+    Если свободных TRX на master-кошельке < threshold, шлём предупреждение админу.
+    """
+    bal = get_trx_balance_v2(master_addr)["balance"]          # свободные Sun
+    if bal >= threshold_sun:
+        return
+
+    chat_id = getattr(config, "ADMIN_CHAT_ID", None)
+    if not chat_id:
+        return
+
+    try:
+        await bot.send_message(
+            chat_id,
+            f"⚠️ На master-кошельке {bal/1e6:.2f} TRX "
+            f"(меньше порога {threshold_sun/1e6:.0f}). Пополните баланс!"
+        )
+    except Exception as e:
+        log.warning(f"notify_if_low_trx: cannot send message: {e}")
 
 
 # ────────────────────────────────────────────────────────────────
@@ -227,10 +306,11 @@ def return_trx(dep_priv:str, dep_addr:str,
 # ────────────────────────────────────────────────────────────────
 # 9.  Основной опрос депозитов
 # ────────────────────────────────────────────────────────────────
-async def poll_trc20_transactions(bot:Bot)->None:
+async def poll_trc20_transactions(bot: Bot) -> None:
+    """Сканируем депозитные адреса, продлеваем подписку, переводим средства."""
     log.info("Start poll…")
     master_addr, master_priv = derive_master()
-    rows=supabase_client.get_pending_deposits_with_privkey()
+    rows = supabase_client.get_pending_deposits_with_privkey()
 
     for row in rows:
         user_id   = row["id"]
@@ -239,55 +319,123 @@ async def poll_trc20_transactions(bot:Bot)->None:
         dep_priv  = row["deposit_privkey"]
         created   = row["deposit_created_at"]
 
-        # проверяем 24 ч
-        if (datetime.now()-created).total_seconds()>24*3600:
-            if get_usdt_balance(dep_addr)==0:
+        # 1) если 24 ч прошло и баланса нет — обнуляем адрес
+        if (datetime.now(timezone.utc) - created).total_seconds() > 24 * 3600:
+            if get_usdt_balance(dep_addr) == 0:
                 supabase_client.reset_deposit_address_and_privkey(user_id)
                 continue
 
-        usdt=get_usdt_balance(dep_addr)
-        if usdt<=0: continue
+        usdt = get_usdt_balance(dep_addr)
+        if usdt <= 0:
+            continue
 
-        # ── 0. продлеваем подписку ПРЯМО СЕЙЧАС ────────────────────
-        days = math.ceil(usdt*config.DAYS_FOR_USDT/config.SUBSCRIPTION_PRICE_USDT)
-        supabase_client.apply_subscription_extension(user_id, days)
-        until = supabase_client.get_subscription_until(user_id)
-        start_str = datetime.now().strftime("%d.%m.%Y")
-        end_str   = until.strftime("%d.%m.%Y") if until else "—"
+        # 2) — продлеваем подписку с учётом триала/текущей подписки
+        days_paid = math.ceil(
+            usdt * config.DAYS_FOR_USDT / config.SUBSCRIPTION_PRICE_USDT
+        )
+
+        # берём самые поздние из now / trial_end / subscription_until
+        user = supabase_client.get_user_by_id(user_id)
+        now_utc      = datetime.now(timezone.utc)
+        trial_end  = user.get("trial_end")          # может быть None
+        sub_end    = user.get("subscription_end")   # может быть None
+        base_start   = max(d for d in (now_utc, trial_end, sub_end) if d)
+
+        new_until = base_start + timedelta(days=days_paid)
+        supabase_client.update_subscription_end(user_id, new_until)
+
+        start_str = base_start.astimezone().strftime("%d.%m.%Y")
+        end_str   = new_until.astimezone().strftime("%d.%m.%Y")
+
         try:
             await bot.send_message(
                 tg_id,
                 f"Перевод в сумме {usdt:.2f} USDT получен.\n"
-                f"Ваша подписка оформлена на {days} дней.\n"
+                f"Ваша подписка оформлена на {days_paid} дней.\n"
                 f"Доступ к TradingGroup разрешён\n"
                 f"с *{start_str}* по *{end_str}*.",
-                parse_mode="Markdown")
-        except Exception: pass
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
 
-        # ── 1. пополняем депозит на 30 TRX ────────────────────────
+        # 3) — пополняем депозит TRX для комиссии (30 TRX)
         if not send_trx(master_priv, master_addr, dep_addr, 30_000_000):
             continue
         await asyncio.sleep(3)
 
-        # ── 2. переводим USDT ─────────────────────────────────────
-        txid = usdt_transfer(dep_priv, dep_addr, master_addr, usdt,
-                             fee_limit=config.TRC20_USDT_FEE_LIMIT)
+        # 4) — переводим USDT на мастер-адрес
+        txid = usdt_transfer(
+            dep_priv, dep_addr, master_addr, usdt,
+            fee_limit=config.TRC20_USDT_FEE_LIMIT
+        )
         if not txid:
-            log.error("USDT transfer failed"); continue
+            log.error("USDT transfer failed")
+            continue
 
-        # ── 3. возвращаем остаток TRX ─────────────────────────────
+        # 5) — возвращаем почти весь остаток TRX, оставив 1 TRX
         leftover = get_trx_balance(dep_addr)
-        if leftover>100_000:
-            ret = return_trx(dep_priv, dep_addr, master_addr, leftover-100_000)
+        if leftover > MIN_LEFTOVER_SUN:
+            sweep_amount = leftover - MIN_LEFTOVER_SUN
+            ret = return_trx(dep_priv, dep_addr, master_addr, sweep_amount)
             if not ret:
-                await bot.send_message(config.ADMIN_CHAT_ID,
-                    f"⚠️ Не удалось вернуть {leftover/1e6:.2f} TRX c {dep_addr}")
-                continue
+                await bot.send_message(
+                    config.ADMIN_CHAT_ID,
+                    f"⚠️ Не удалось вернуть {leftover / 1e6:.2f} TRX c {dep_addr}",
+                )
+                # не прерываем — продолжаем, чтобы не дублировать подписку
 
-        # ── 4. финальная запись и очистка ─────────────────────────
+        # 6) — финальная запись и очистка
         supabase_client.create_payment(user_id, txid, usdt, 0)
-        supabase_client.update_payment_days(user_id, usdt, days)
+        supabase_client.update_payment_days(user_id, usdt, days_paid)
         supabase_client.reset_deposit_address_and_privkey(user_id)
-        log.info(f"✅ {usdt:.2f} USDT с {dep_addr} → мастер; подписка до {end_str}")
+
+        log.info(
+            "✅ %.2f USDT с %s → мастер; подписка до %s",
+            usdt, dep_addr, end_str,
+        )
 
     log.info("Poll done.")
+
+
+    # ────────────────────────────────────────────────────────────────
+# 11-bis.  Печать баланса мастера при старте бота
+# ────────────────────────────────────────────────────────────────
+async def print_master_balance_at_start(bot: Bot) -> None:
+    """
+    • Считает текущие балансы мастера (USDT + TRX со свободным и frozen-V2).
+    • Выводит информацию в лог.
+    • Если указан ADMIN_CHAT_ID ― присылает краткое сообщение админу.
+    """
+    master_addr, _ = derive_master()
+
+    usdt           = get_usdt_balance(master_addr)
+    spend_sun, tot = get_total_balance_v2(master_addr)
+    frozen_sun     = max(0, tot - spend_sun)
+
+    # напоминание об остатке TRX
+    await notify_if_low_trx(bot, master_addr)
+
+    log.info(
+        "Bot started ✅\n"
+        f"Master address: {master_addr}\n"
+        f"Balance: {usdt:.2f} USDT | {frozen_sun/1e6:.2f} TRX freeze / {tot/1e6:.2f} TRX total"
+    )
+
+    admin_chat = getattr(config, "ADMIN_CHAT_ID", None)
+    if admin_chat:
+        try:
+            await bot.send_message(
+                admin_chat,
+                (
+                    "🏁 *Бот запущен*\n"
+                    f"`{master_addr}`\n"
+                    f"*USDT*: {usdt:.2f}\n"
+                    f"*TRX*:  {tot/1e6:.2f} "
+                    f"(в том числе заморожено {frozen_sun/1e6:.2f})"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            log.warning(f"Cannot notify admin: {e}")
+

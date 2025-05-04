@@ -312,7 +312,7 @@ def get_user_sub_info(user_id: int) -> str:
 
 # внизу файла (после apply_subscription_extension)
 
-def get_subscription_until(user_id: int):
+def get_subscription_(user_id: int):
     """
     Возвращает datetime expiration (или None),
     чтобы красиво показать диапазон доступа пользователю.
@@ -320,8 +320,17 @@ def get_subscription_until(user_id: int):
     with _get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT subscription_until FROM users WHERE id=%s",
+                "SELECT subscription_end FROM users WHERE id=%s",
                 (user_id,)
             )
             row = cur.fetchone()
             return row[0] if row else None
+        
+# Добавьте или обновите функцию
+def update_subscription_end(user_id: int, new_until: datetime):
+    cur.execute(
+        \"\"\"UPDATE users
+               SET subscription_end = %s
+             WHERE id = %s\"\"\",
+        (new_until, user_id)
+    )

@@ -1,24 +1,39 @@
 #!/usr/bin/env python3
+"""Главный файл запуска Telegram‑бота.
+Обработка подписок, опрос TRC‑20, ежедневные задачи и логирование.
+"""
+
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
+
 from aiogram import Dispatcher
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 import logger_config
-from datetime import datetime, timedelta
+import config  # полный модуль конфигурации, нужен для ADMIN_CHAT_ID и др.
 from config import bot, CHECK_INTERVAL_MIN, DAILY_ANALYSIS_TIME
+
 import supabase_client
 from start import start_router
 from subscription import subscription_router
 from tron_service import poll_trc20_transactions, print_master_balance_at_start
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 
 log = logging.getLogger(__name__)
 
-def _log_freeze_summary():
-    """Считает общее кол-во замороженных TRX и кол-во таких записей, выводит в лог."""
-    resp_sum = supabase_client.table("freeze_records").select("*")\
-        .eq("unfrozen", False)\
+
+# ---------------------------------------------------------------------------
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ---------------------------------------------------------------------------
+
+def _log_freeze_summary() -> None:
+    """Логирует общую сумму и количество пока неразмороженных TRX."""
+    resp_sum = (
+        supabase_client.table("freeze_records")
+        .select("*")
+        .eq("unfrozen", False)
         .execute()
+    )
 
     if not resp_sum.data:
         log.info("Осталось в заморозке 0.00 TRX на 0 адресах.")
@@ -28,23 +43,26 @@ def _log_freeze_summary():
     total_sun = sum(r["freeze_amount_sun"] for r in records)
     total_trx = total_sun / 1_000_000
     cnt = len(records)
-    log.info(f"Осталось в заморозке {total_trx:.2f} TRX на {cnt} адресах.")
+    log.info("Осталось в заморозке %.2f TRX на %d адресах.", total_trx, cnt)
 
-async def scheduled_daily_unfreeze():
-    log.info("Start daily unfreeze check...")
+
+async def scheduled_daily_unfreeze() -> None:
+    """Размораживает TRX, замороженные больше трёх суток."""
+    log.info("Start daily unfreeze check…")
 
     cutoff_time = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
 
-    # Берём все незамороженные записи, которым > 3 дней
-    resp = supabase_client.table("freeze_records").select("*")\
-        .eq("unfrozen", False)\
-        .lt("frozen_at", cutoff_time)\
+    resp = (
+        supabase_client.table("freeze_records")
+        .select("*")
+        .eq("unfrozen", False)
+        .lt("frozen_at", cutoff_time)
         .execute()
+    )
 
     records = resp.data or []
     if not records:
         log.info("No freeze records to unfreeze today.")
-        # Даже если ничего не разморозили, вывести сводку о том, сколько всего ещё заморожено
         _log_freeze_summary()
         return
 
@@ -54,85 +72,101 @@ async def scheduled_daily_unfreeze():
     for rec in records:
         freeze_id = rec["id"]
         deposit_addr = rec["deposit_address"]
-        freeze_amt_sun = rec["freeze_amount_sun"]  # в sun
+        freeze_amt_sun = rec["freeze_amount_sun"]
         resource = rec["resource"]
 
         # Пытаемся разморозить
         unfreeze_tx = unfreeze_balance_v2(
-            owner_address=MASTER_ADDR,
+            owner_address=MASTER_ADDR,  # предполагается, что импортированы где‑то сверху
             receiver_address=deposit_addr,
-            resource=resource
+            resource=resource,
         )
         if unfreeze_tx:
             record_unfreeze_in_db(freeze_id, unfreeze_tx)
-            log.info(f"Deposit={deposit_addr} unfreeze successful => tx={unfreeze_tx}")
-
+            log.info("Deposit=%s unfreeze successful ⇒ tx=%s", deposit_addr, unfreeze_tx)
             unfrozen_ok += 1
             unfrozen_trx_sun += freeze_amt_sun
         else:
-            log.warning(f"Unfreeze failed deposit={deposit_addr}, freeze_id={freeze_id}")
+            log.warning("Unfreeze failed deposit=%s, freeze_id=%s", deposit_addr, freeze_id)
 
-    # После цикла выводим сводку
-    if unfrozen_ok > 0:
-        unfrozen_trx = unfrozen_trx_sun / 1_000_000  # переводим sun -> TRX
-        log.info(
-            f"Разморожено {unfrozen_trx:.2f} TRX на {unfrozen_ok} адресах."
-        )
-    
-    # А также хотим вывести, сколько всего осталось заморожено
+    if unfrozen_ok:
+        unfrozen_trx = unfrozen_trx_sun / 1_000_000
+        log.info("Разморожено %.2f TRX на %d адресах.", unfrozen_trx, unfrozen_ok)
+
     _log_freeze_summary()
-
     log.info("Daily unfreeze check done.")
 
 
-async def scheduled_tron_poll():
-    """Вызывается каждые CHECK_INTERVAL_MIN минут для опроса сети Tron."""
+# ---------------------------------------------------------------------------
+# ПЕРИОДИЧЕСКИЙ ОПРОС СЕТИ TRON
+# ---------------------------------------------------------------------------
+
+async def scheduled_tron_poll(bot, cfg):
+    """Опрос входящих TRC‑20 транзакций с обработкой ошибок."""
     try:
         await poll_trc20_transactions(bot)
-    except Exception as e:
-        log.exception("poll_trc20_transactions crashed: %s", e)
-        if getattr(config, "ADMIN_CHAT_ID", None):
-            await bot.send_message(config.ADMIN_CHAT_ID,
-                f"❌ Ошибка опроса Tron: {e!s}")    
+    except Exception:  # pylint: disable=broad-except
+        log.exception("scheduled_tron_poll crashed")
+        # Уведомление администратора, если указан чат‑ID
+        if getattr(cfg, "ADMIN_CHAT_ID", None):
+            try:
+                await bot.send_message(cfg.ADMIN_CHAT_ID, "❗️ Tron poll task crashed, см. логи.")
+            except Exception:  # pylint: disable=broad-except
+                log.exception("Failed to notify admin about crash")
 
-async def scheduled_daily_job():
-    """Вызывается в DAILY_ANALYSIS_TIME для ежедневных задач (чистим триал, шлём отчёт)."""
-    from daily_tasks import run_daily_tasks
+
+# ---------------------------------------------------------------------------
+# ДНЕВНЫЕ ЗАДАЧИ
+# ---------------------------------------------------------------------------
+
+async def scheduled_daily_job() -> None:
+    """Запуск ежедневных задач и отчёта администратору."""
+    from daily_tasks import run_daily_tasks  # локальный импорт, чтобы избежать циклов
     from admin_report import send_admin_report
+
     await run_daily_tasks(bot)
     await send_admin_report(bot)
 
-async def main():
-    # 1) Настраиваем логгеры
-    logger_config.setup_logger()
-    logging.info("Bot is starting...")
 
-    # 2) Проверяем структуру БД (таблицы users/payments)
+# ---------------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------------
+
+async def main() -> None:
+    # 1. Настройка логирования
+    logger_config.setup_logger()
+    log.info("Bot is starting…")
+
+    # 2. Проверяем структуру БД
     supabase_client.check_db_structure()
 
-    # 3) Создаём диспетчер Aiogram 3.x
+    # 3. Диспетчер Aiogram
     dp = Dispatcher()
-
-    # Подключаем роутеры
     dp.include_router(start_router)
     dp.include_router(subscription_router)
 
-    # *** НОВОЕ: печатаем баланс мастер-адреса при старте ***
+    # 4. Печатаем баланс мастер‑адреса при старте
     await print_master_balance_at_start(bot)
 
-    # 4) Поднимаем планировщик (APSсheduler)
+    # 5. Планировщик задач (APScheduler)
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(scheduled_tron_poll, "interval", minutes=CHECK_INTERVAL_MIN)
+    scheduler.add_job(  # опрос TRON
+        scheduled_tron_poll,
+        "interval",
+        minutes=CHECK_INTERVAL_MIN,
+        args=[bot, config],  # ← передаём и bot, и весь модуль config
+    )
 
     hour, minute = map(int, DAILY_ANALYSIS_TIME.split(":"))
     scheduler.add_job(scheduled_daily_job, "cron", hour=hour, minute=minute)
     scheduler.add_job(scheduled_daily_unfreeze, "cron", hour=hour, minute=minute)
     scheduler.start()
 
-    logging.info("Dispatcher setup complete. Starting polling.")
+    log.info("Dispatcher setup complete. Starting polling.")
 
-    # ВАЖНО: skip_updates=True, чтобы бот пропустил старые нажатия/сообщения
+    # Запускаем бота (skip_updates=True, чтобы игнорировать старые события)
     await dp.start_polling(bot, skip_updates=True)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
