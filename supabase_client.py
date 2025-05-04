@@ -29,23 +29,6 @@ def check_db_structure():
         except psycopg2.Error as e:
             log.error(f"Ошибка проверки таблицы '{t}': {e}")
 
-def increment_deposit_index(user_id: int):
-    """
-    Увеличить deposit_index на 1 и вернуть новое значение.
-    """
-    with _get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE users
-                   SET deposit_index = deposit_index + 1
-                 WHERE id = %s
-                 RETURNING deposit_index
-            """, (user_id,))
-            row = cur.fetchone()
-            conn.commit()
-            if row:
-                return row[0]
-    return 0
 
 
 def create_user_custom_trial(telegram_id: int, username: str, trial_end: datetime):
@@ -327,3 +310,18 @@ def get_user_sub_info(user_id: int) -> str:
             else:
                 return "Подписка истекла."
 
+# внизу файла (после apply_subscription_extension)
+
+def get_subscription_until(user_id: int):
+    """
+    Возвращает datetime expiration (или None),
+    чтобы красиво показать диапазон доступа пользователю.
+    """
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT subscription_until FROM users WHERE id=%s",
+                (user_id,)
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
