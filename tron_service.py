@@ -167,6 +167,41 @@ def usdt_transfer(priv_from:str, addr_from:str,
         log.error("create transfer failed"); return None
     return sign_and_broadcast(tx, priv_from)
 
+
+
+# ────────────────────────────────────────────────────────────────
+# 7-bis.  Создание депозитного адреса + QR-код
+# ────────────────────────────────────────────────────────────────
+def generate_ephemeral_address(user_id: int) -> Dict[str, str]:
+    """
+    Генерирует новый KeyPair, сохраняет (addr, priv_hex, created_at) в Supabase
+    и возвращает словарь с адресом и приватным ключом.
+    """
+    priv = os.urandom(32)
+    sk   = ecdsa.SigningKey.from_string(priv, curve=ecdsa.SECP256k1)
+    pub  = b"\x04" + sk.verifying_key.to_string()
+    addr = pub_to_b58(pub)
+
+    supabase_client.set_deposit_address_and_privkey(user_id, addr, priv.hex())
+    log.info(f"Создан депозит {addr} для user={user_id}")
+    return {"address": addr, "private_key": priv.hex()}
+
+
+def create_qr_code(data: str) -> str:
+    """
+    Генерирует PNG-файл с QR-кодом (адрес или любой текст) и
+    возвращает путь к временно сохранённому файлу.
+    Файл НЕ удаляется автоматически — вызывающая сторона сама решает,
+    когда убрать.
+    """
+    img = qrcode.make(data)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    img.save(tmp.name)
+    return tmp.name
+
+
+
+
 # ────────────────────────────────────────────────────────────────
 # 8.  TRX helper-функции
 # ────────────────────────────────────────────────────────────────
