@@ -178,23 +178,32 @@ async def cmd_status(message: types.Message):
     ]
 
     # --- доп. блок, если триал ещё не завершился --------------------------
+    added_header = False     # чтобы вывести заголовок ровно один раз
+
+    # 1) тестовый период
     if trial_end and trial_end > now_utc:
         trial_end_str = trial_end.astimezone(local_tz).strftime("%d.%m.%Y")
         trial_days    = (trial_end.date() - now_utc.date()).days
-
-        paid_start = max(trial_end, now_utc)        # начало оплаченной части
-        paid_start_str = paid_start.astimezone(local_tz).strftime("%d.%m.%Y")
-        paid_days      = (sub_end.date() - paid_start.date()).days if sub_end else 0
-        paid_end_str   = sub_end.astimezone(local_tz).strftime("%d.%m.%Y") if sub_end else end_str
-
+        lines.append("\nВ том числе:")
+        added_header = True
         lines.append(
-            "\nВ том числе:"
-            f"\n• с {today_str} по {trial_end_str} — {trial_days} дн. тестового периода."
-            f"\n• с {paid_start_str} по {paid_end_str} — {paid_days} дн. оплаченной подписки."
+            f"• с {today_str} по {trial_end_str} — {trial_days} дн. тестового периода."
+        )
+
+    # 2) оплаченная подписка (если есть)
+    if sub_end and sub_end > now_utc:
+        subs_start_db = as_utc(user.get("subscription_start"))
+        paid_start = max(d for d in (trial_end, subs_start_db, sub_start) if d)
+        paid_start_str  = paid_start.astimezone(local_tz).strftime("%d.%m.%Y")
+        paid_total_days = (sub_end.date() - paid_start.date()).days
+
+        if not added_header:
+            lines.append("\nВ том числе:")
+        lines.append(
+            f"• с {paid_start_str} по {end_str} — {paid_total_days} дн. оплаченной подписки."
         )
 
     await message.answer("\n".join(lines), parse_mode="Markdown", reply_markup=main_menu)
-
 
 
 @subscription_router.message(lambda msg: msg.text == "Оформить подписку")

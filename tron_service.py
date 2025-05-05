@@ -12,6 +12,7 @@ import config, supabase_client
 from aiogram import Bot
 from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
 
+
 log = logging.getLogger(__name__)
 
 
@@ -408,11 +409,26 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             continue
 
         # возвращаем остаток TRX
+
         leftover_sun = get_trx_balance(dep_addr)
-        fee_trx      = (30_000_000 - leftover_sun) / 1e6
+        fee_trx      = (30_000_000 - leftover_sun) / 1e6      # фактическая комиссия
         if leftover_sun > MIN_LEFTOVER_SUN:
             sweep_amount = leftover_sun - MIN_LEFTOVER_SUN
-            return_trx(dep_priv, dep_addr, master_addr, sweep_amount)
+            ret_tx = return_trx(dep_priv, dep_addr, master_addr, sweep_amount)
+            if ret_tx:
+                log.info("TRX sweep %.2f → мастер, tx=%s", sweep_amount/1e6, ret_tx)
+            else:
+                log.error(
+                    "TRX sweep FAILED; осталось %.2f TRX на %s (fee ≈ %.3f TRX)",
+                    leftover_sun/1e6, dep_addr, fee_trx
+                )
+                await bot.send_message(
+                    config.ADMIN_CHAT_ID,
+                    f"⚠️ Не удалось вернуть {sweep_amount/1e6:.2f} TRX "
+                    f"c {dep_addr}. Остаток {leftover_sun/1e6:.2f} TRX"
+                )
+
+
 
         # --- платеж подтверждён -------------------------------------------
         supabase_client.mark_payment_paid(pending_id, txid)
@@ -436,8 +452,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
                 "🎉 *Подписка активна!* Ниже ваша ссылка для входа в группу "
                 "(действует 24 ч, один вход):\n"
                 f"{invite.invite_link}",
-                parse_mode="Markdown",
-                reply_markup=main_menu
+                parse_mode="Markdown"               
             )
         except Exception as e:
             log.error("Auto-invite failed for %s: %s", tg_id, e)
