@@ -369,21 +369,34 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         supabase_client.update_subscription_end(user_id, new_end)
 
 # ── уведомляем пользователя ─────────────────────────────────────────────
-        start_str = base_start.astimezone().strftime("%d.%m.%Y")
-        end_str   = new_end.astimezone().strftime("%d.%m.%Y")
+        local_tz   = datetime.now().astimezone().tzinfo          # часовой пояс сервера
+        today_str  = datetime.now(local_tz).strftime("%d.%m.%Y") # «текущая дата» для пользователя
+        end_str    = new_end.astimezone(local_tz).strftime("%d.%m.%Y")
 
+# --- базовый текст ---------------------------------------------------------
+        lines = [
+            f"Перевод в сумме {usdt:.2f} USDT получен.",
+            f"Ваша подписка оформлена на {days_paid} дней.",
+            "Доступ к TradingGroup разрешён",
+            f"с {today_str} по {end_str}.",
+        ]
 
-        try:
-            await bot.send_message(
-                tg_id,
-                f"Перевод в сумме {usdt:.2f} USDT получен.\n"
-                f"Ваша подписка оформлена на {days_paid} дней.\n"
-                f"Доступ к TradingGroup разрешён\n"
-                f"с *{start_str}* по *{end_str}*.",
-                parse_mode="Markdown",
+# --- добавляем секцию про тестовый период, если он ещё активен -------------
+        if trial_end and trial_end > now_utc:
+            trial_end_str = trial_end.astimezone(local_tz).strftime("%d.%m.%Y")
+            trial_days    = (trial_end.date() - now_utc.date()).days
+            paid_start_str = base_start.astimezone(local_tz).strftime("%d.%m.%Y")
+            paid_days = days_paid
+
+            lines.append(                        # пустая строка-разделитель
+                f"\nВ том числе:"
+                f"\n• с {today_str} по {trial_end_str} — {trial_days} дн. тестового периода."
+                f"\n• с {paid_start_str} по {end_str} — {paid_days} дн. оплаченной подписки."
             )
-        except Exception:
-            pass
+
+        msg = "\n".join(lines)
+
+        await bot.send_message(tg_id, msg, parse_mode="Markdown")
 
         # 3) — пополняем депозит TRX для комиссии (30 TRX)
         if not send_trx(master_priv, master_addr, dep_addr, 30_000_000):
