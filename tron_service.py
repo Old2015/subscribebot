@@ -413,14 +413,22 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             continue
 
         # 5) — возвращаем почти весь остаток TRX, оставив 1 TRX
-        leftover = get_trx_balance(dep_addr)
-        if leftover > MIN_LEFTOVER_SUN:
-            sweep_amount = leftover - MIN_LEFTOVER_SUN
-            ret = return_trx(dep_priv, dep_addr, master_addr, sweep_amount)
-            if not ret:
+        leftover_sun = get_trx_balance(dep_addr)
+        returned_trx = 0.0
+        fee_trx      = (30_000_000 - leftover_sun) / 1e6   # сколько «съела» комиссия TRON
+        if leftover_sun > MIN_LEFTOVER_SUN:
+            sweep_amount = leftover_sun - MIN_LEFTOVER_SUN
+            ret_tx = return_trx(dep_priv, dep_addr, master_addr, sweep_amount)
+            if ret_tx:
+                returned_trx = sweep_amount / 1e6
+                log.info(
+                    "TRX sweep %.2f → мастер, tx=%s (fee ≈ %.3f TRX)",
+                    returned_trx, ret_tx, fee_trx,
+                )
+            else:
                 await bot.send_message(
                     config.ADMIN_CHAT_ID,
-                    f"⚠️ Не удалось вернуть {leftover / 1e6:.2f} TRX c {dep_addr}",
+                    f"⚠️ Не удалось вернуть {sweep_amount/1e6:.2f} TRX с {dep_addr}"
                 )
                 # не прерываем — продолжаем, чтобы не дублировать подписку
 
@@ -430,8 +438,8 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         supabase_client.reset_deposit_address_and_privkey(user_id)
 
         log.info(
-            "✅ %.2f USDT с %s → мастер; подписка до %s",
-            usdt, dep_addr, end_str,
+            "✅ %.2f USDT с %s → мастер; подписка до %s; комиссия %.3f TRX; возвращено %.3f TRX",
+            usdt, dep_addr, end_str, fee_trx, returned_trx,
         )
 
     log.info("Poll done.")
