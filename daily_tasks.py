@@ -9,7 +9,7 @@ import supabase_client
 log = logging.getLogger(__name__)
 
 RATE_LIMIT  = 0.06             # ~16-17 msg/сек
-NOTIFY_DAYS = (7, 3, 1)        # напоминать заранее
+NOTIFY_DAYS = (3, 1)        # напоминать заранее
 
 def as_utc(dt):
     return dt if (dt and dt.tzinfo) else (dt and dt.replace(tzinfo=timezone.utc))

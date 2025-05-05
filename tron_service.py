@@ -315,6 +315,7 @@ def return_trx(dep_priv:str, dep_addr:str,
     if "txID" not in raw: return None
     return sign_and_broadcast(raw, dep_priv)
 
+
 # ────────────────────────────────────────────────────────────────
 # 9.  Основной опрос депозитов
 # ────────────────────────────────────────────────────────────────
@@ -331,119 +332,119 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         dep_priv  = row["deposit_privkey"]
         created   = row["deposit_created_at"]
 
-        if created.tzinfo is None:                 # делаем aware в UTC
+        if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
 
-        # 1) если 24 ч прошло и баланса нет — обнуляем адрес
+        # если адресу >24 ч и USDT нет — обнуляем
         if (datetime.now(timezone.utc) - created).total_seconds() > 24 * 3600:
             if get_usdt_balance(dep_addr) == 0:
                 supabase_client.reset_deposit_address_and_privkey(user_id)
-                continue
+            continue
 
         usdt = get_usdt_balance(dep_addr)
         if usdt <= 0:
             continue
 
-        # 2) — продлеваем подписку с учётом триала/текущей подписки
-        days_paid = math.ceil(
-            usdt * config.DAYS_FOR_USDT / config.SUBSCRIPTION_PRICE_USDT
-        )
+        days_paid = math.ceil(usdt * config.DAYS_FOR_USDT /
+                              config.SUBSCRIPTION_PRICE_USDT)
 
-        # ── ищем данные пользователя по Telegram-ID ──────────────────────────────
-        user = supabase_client.get_user_by_telegram_id(tg_id)
-        if not user:
-            log.error("User tg=%s not found while processing deposit %s", tg_id, dep_addr)
-            continue                                   # пропускаем запись
+        # --- ищем/создаём pending-платёж -----------------------------------
+        pending_id = supabase_client.get_pending_payment(user_id, dep_addr)
 
-        now_utc       = datetime.now(timezone.utc)
-        trial_end = as_utc(user.get("trial_end"))         # конец триала, может быть None
-        sub_end   = as_utc(user.get("subscription_end"))   # конец подписки, может быть None
+        first_time = pending_id is None
+        if first_time:
+            # продлеваем доступ только один раз
+            user = supabase_client.get_user_by_telegram_id(tg_id)
+            if not user:
+                log.error("User tg=%s not found (deposit %s)", tg_id, dep_addr)
+                continue
 
-# выбираем самую позднюю из «сейчас / trial_end / subscription_end»
-        base_start = max(d for d in (now_utc, trial_end, sub_end) if d)
+            now_utc   = datetime.now(timezone.utc)
+            trial_end = as_utc(user.get("trial_end"))
+            sub_end   = as_utc(user.get("subscription_end"))
+            base_start = max(d for d in (now_utc, trial_end, sub_end) if d)
+            new_end    = base_start + timedelta(days=days_paid)
 
-# days_paid вычисляете выше (как и раньше)
-        new_end = base_start + timedelta(days=days_paid)
+            supabase_client.update_subscription_end(user_id, new_end)
 
-# ── ОБНОВЛЯЕМ базу с правильной функцией / полем ────────────────────────
-        supabase_client.update_subscription_end(user_id, new_end)
-
-# ── уведомляем пользователя ─────────────────────────────────────────────
-        local_tz   = datetime.now().astimezone().tzinfo          # часовой пояс сервера
-        today_str  = datetime.now(local_tz).strftime("%d.%m.%Y") # «текущая дата» для пользователя
-        end_str    = new_end.astimezone(local_tz).strftime("%d.%m.%Y")
-
-# --- базовый текст ---------------------------------------------------------
-        lines = [
-            f"Перевод в сумме {usdt:.2f} USDT получен.",
-            f"Ваша подписка оформлена на {days_paid} дней.",
-            "Доступ к TradingGroup разрешён",
-            f"с {today_str} по {end_str}.",
-        ]
-
-# --- добавляем секцию про тестовый период, если он ещё активен -------------
-        if trial_end and trial_end > now_utc:
-            trial_end_str = trial_end.astimezone(local_tz).strftime("%d.%m.%Y")
-            trial_days    = (trial_end.date() - now_utc.date()).days
-            paid_start_str = base_start.astimezone(local_tz).strftime("%d.%m.%Y")
-            paid_days = days_paid
-
-            lines.append(                        # пустая строка-разделитель
-                f"\nВ том числе:"
-                f"\n• с {today_str} по {trial_end_str} — {trial_days} дн. тестового периода."
-                f"\n• с {paid_start_str} по {end_str} — {paid_days} дн. оплаченной подписки."
+            # создаём pending-запись
+            pending_id = supabase_client.create_pending_payment(
+                user_id, dep_addr, usdt, days_paid
             )
 
-        msg = "\n".join(lines)
+            # уведомляем пользователя (первый и единственный раз)
+            local_tz  = datetime.now().astimezone().tzinfo
+            today_str = datetime.now(local_tz).strftime("%d.%m.%Y")
+            end_str   = new_end.astimezone(local_tz).strftime("%d.%m.%Y")
 
-        await bot.send_message(tg_id, msg, parse_mode="Markdown")
+            lines = [
+                f"Перевод в сумме {usdt:.2f} USDT получен.",
+                f"Ваша подписка оформлена на {days_paid} дней.",
+                "Доступ к TradingGroup разрешён",
+                f"с {today_str} по {end_str}.",
+            ]
+            if trial_end and trial_end > now_utc:
+                trial_end_str = trial_end.astimezone(local_tz).strftime("%d.%m.%Y")
+                trial_days = (trial_end.date() - now_utc.date()).days
+                paid_start_str = base_start.astimezone(local_tz).strftime("%d.%m.%Y")
+                lines.append(
+                    f"\nВ том числе:"
+                    f"\n• с {today_str} по {trial_end_str} — {trial_days} дн. тестового периода."
+                    f"\n• с {paid_start_str} по {end_str} — {days_paid} дн. оплаченной подписки."
+                )
+            await bot.send_message(tg_id, "\n".join(lines), parse_mode="Markdown")
 
-        # 3) — пополняем депозит TRX для комиссии (30 TRX)
+        # --- технические шаги (TRX + USDT) ---------------------------------
         if not send_trx(master_priv, master_addr, dep_addr, 30_000_000):
             continue
         await asyncio.sleep(3)
 
-        # 4) — переводим USDT на мастер-адрес
         txid = usdt_transfer(
             dep_priv, dep_addr, master_addr, usdt,
             fee_limit=config.TRC20_USDT_FEE_LIMIT
         )
         if not txid:
-            log.error("USDT transfer failed")
+            log.error("USDT transfer failed (payment %s)", pending_id)
             continue
 
-        # 5) — возвращаем почти весь остаток TRX, оставив 1 TRX
+        # возвращаем остаток TRX
         leftover_sun = get_trx_balance(dep_addr)
-        returned_trx = 0.0
-        fee_trx      = (30_000_000 - leftover_sun) / 1e6   # сколько «съела» комиссия TRON
+        fee_trx      = (30_000_000 - leftover_sun) / 1e6
         if leftover_sun > MIN_LEFTOVER_SUN:
             sweep_amount = leftover_sun - MIN_LEFTOVER_SUN
-            ret_tx = return_trx(dep_priv, dep_addr, master_addr, sweep_amount)
-            if ret_tx:
-                returned_trx = sweep_amount / 1e6
-                log.info(
-                    "TRX sweep %.2f → мастер, tx=%s (fee ≈ %.3f TRX)",
-                    returned_trx, ret_tx, fee_trx,
-                )
-            else:
-                await bot.send_message(
-                    config.ADMIN_CHAT_ID,
-                    f"⚠️ Не удалось вернуть {sweep_amount/1e6:.2f} TRX с {dep_addr}"
-                )
-                # не прерываем — продолжаем, чтобы не дублировать подписку
+            return_trx(dep_priv, dep_addr, master_addr, sweep_amount)
 
-        # 6) — финальная запись и очистка
-        supabase_client.create_payment(user_id, txid, usdt, 0)
-        supabase_client.update_payment_days(user_id, usdt, days_paid)
+        # --- платеж подтверждён -------------------------------------------
+        supabase_client.mark_payment_paid(pending_id, txid)
         supabase_client.reset_deposit_address_and_privkey(user_id)
 
-        log.info(
-            "✅ %.2f USDT с %s → мастер; подписка до %s; комиссия %.3f TRX; возвращено %.3f TRX",
-            usdt, dep_addr, end_str, fee_trx, returned_trx,
-        )
+        # auto-invite
+        try:
+            await bot.unban_chat_member(
+                chat_id=config.PRIVATE_GROUP_ID,
+                user_id=tg_id,
+                only_if_banned=True
+            )
+            invite = await bot.create_chat_invite_link(
+                chat_id=config.PRIVATE_GROUP_ID,
+                name="Auto-invite after payment",
+                member_limit=1,
+                expire_date=int(time.time()) + 24 * 3600
+            )
+            await bot.send_message(
+                tg_id,
+                "🎉 *Подписка активна!* Ниже ваша ссылка для входа в группу "
+                "(действует 24 ч, один вход):\n"
+                f"{invite.invite_link}",
+                parse_mode="Markdown",
+                reply_markup=main_menu
+            )
+        except Exception as e:
+            log.error("Auto-invite failed for %s: %s", tg_id, e)
+
+        log.info("✅ %.2f USDT -> master (tx %s); payment %s = PAID", usdt, txid, pending_id)
 
     log.info("Poll done.")
-
 
     # ────────────────────────────────────────────────────────────────
 # 11-bis.  Печать баланса мастера при старте бота

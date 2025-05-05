@@ -1,8 +1,9 @@
 import psycopg2
 import logging
+
 from datetime import datetime, timedelta
 from config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
-
+from typing import Optional
 log = logging.getLogger(__name__)
 
 def _get_connection():
@@ -347,3 +348,47 @@ def get_all_users():
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in rows]
+    
+
+def get_pending_payment(user_id: int, deposit_addr: str) -> Optional[int]:
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM payments
+             WHERE user_id = %s AND deposit_address = %s AND status = 'pending'
+            """,
+            (user_id, deposit_addr)
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def create_pending_payment(user_id: int, deposit_addr: str,
+                           amount_usdt: float, days_added: int) -> int:
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO payments (user_id, deposit_address,
+                                  amount_usdt, days_added, status)
+            VALUES (%s, %s, %s, %s, 'pending')
+            RETURNING id
+            """,
+            (user_id, deposit_addr, amount_usdt, days_added)
+        )
+        conn.commit()
+        return cur.fetchone()[0]
+    
+def mark_payment_paid(payment_id: int, txid: str):
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE payments
+               SET status = 'paid',
+                   txhash = %s,
+                   paid_at = NOW()
+             WHERE id = %s
+            """,
+            (txid, payment_id)
+        )
+        conn.commit()
+

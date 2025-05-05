@@ -11,6 +11,11 @@ from tron_service import create_qr_code, generate_ephemeral_address
 subscription_router = Router()
 log = logging.getLogger(__name__)
 
+# Anti-spam: не чаще одного раза в 30 сек
+RESTART_COOLDOWN = 30                        # сек
+_last_restart: dict[int, float] = {}         # tg_id → timestamp
+
+
 # Три кнопки (Reply-клавиатура)
 main_menu = types.ReplyKeyboardMarkup(
     keyboard=[
@@ -33,8 +38,20 @@ async def cmd_restart(message: types.Message):
     2) Проверяем, есть ли trial_end > now или subscription_end > now
     3) Если есть — генерируем одноразовую ссылку (24 ч, member_limit=1)
     """
-    telegram_id = message.from_user.id
-    log.info(f"User {telegram_id} pressed 'Начать заново'")
+    telegram_id = message.from_user.id          # ← добавили
+    log.info("User %s pressed 'Начать заново'", telegram_id)
+
+    now_ts = time.time()
+    if now_ts - _last_restart.get(telegram_id, 0) < RESTART_COOLDOWN:
+        await message.answer(
+            "Ссылку можно запрашивать раз в 30 секунд. "
+            "Пожалуйста, подождите немного 🙂",
+            reply_markup=main_menu
+        )
+        return
+    _last_restart[telegram_id] = now_ts
+
+
 
     # unban
     try:

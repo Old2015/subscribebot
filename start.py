@@ -104,18 +104,19 @@ async def cmd_start(message: types.Message):
             link_str = (
                 f"Ссылка на вход в приватную торговую группу (действует 24 часа, один вход):\n"
                 f"{invite_link.invite_link}\n\n"
-                "Если понадобится новая ссылка, нажмите «Начать заново»."
+                "Если понадобится новая ссылка, нажмите «Начать заново».\n"
+                "Возникли проблемы - пишите @gwen12309."
             )
         except Exception as e:
             log.error(f"Failed to create single-use link for new user {telegram_id}: {e}")
             link_str = (
-                "Не удалось автоматически создать ссылку. Свяжитесь с админом "
+                "Не удалось автоматически создать ссылку. Свяжитесь с админом @gwen12309"
                 "или используйте «Начать заново» позже."
             )
 
         text = (
-            f"Добро пожаловать! Вам оформлен тестовый доступ на {days_left} дн., "
-            f"до {trial_end_str}.\n\n"
+            f"Добро пожаловать! Вы получили доступ в TradingGroup и Вам оформлен тестовый доступ на {days_left} дн., "
+            f"до {trial_end_str}.\n Внимательно изучите документацию в закрепе группы.\n\n"
             f"{link_str}"
         )
         await message.answer(text, reply_markup=main_menu)
