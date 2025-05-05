@@ -327,10 +327,16 @@ def get_subscription_(user_id: int):
             return row[0] if row else None
         
 # Добавьте или обновите функцию
-def update_subscription_end(user_id: int, new_until: datetime):
-    cur.execute(
-        \"\"\"UPDATE users
+def update_subscription_end(user_id: int, new_until: datetime) -> None:
+    """
+    Обновляет поле subscription_end у пользователя.
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
                SET subscription_end = %s
-             WHERE id = %s\"\"\",
-        (new_until, user_id)
-    )
+             WHERE id = %s
+            """,
+            (new_until, user_id)
+        )

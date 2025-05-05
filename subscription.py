@@ -1,5 +1,5 @@
 import time
-from datetime import datetime  
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 
@@ -181,24 +181,34 @@ async def cmd_subscribe(message: types.Message):
         )
         return
 
-    deposit_address = user.get("deposit_address")
-    deposit_created_at = user.get("deposit_created_at")
-    now = datetime.now()
+    deposit_address     = user.get("deposit_address")
+    deposit_created_at  = user.get("deposit_created_at")        # может быть aware или naive
 
-    # Проверка 24 часов
     if deposit_address and deposit_created_at:
-        diff = now - deposit_created_at
-        if diff.total_seconds() < 24 * 3600:
-            hours_left = 24 - diff.total_seconds() // 3600
+        # --- выравниваем тайм-зоны -------------------------------------------
+        created_utc = (
+            deposit_created_at
+            if deposit_created_at.tzinfo
+            else deposit_created_at.replace(tzinfo=timezone.utc)
+        )
+        now_utc = datetime.now(timezone.utc)
+
+        # --- сколько времени прошло / осталось ------------------------------
+        diff_seconds      = (now_utc - created_utc).total_seconds()
+        if diff_seconds < 24 * 3600:
+            remaining_sec = 24 * 3600 - diff_seconds
+            hours_left    = int(remaining_sec // 3600)   # или math.ceil(… / 3600)
+
             await message.answer(
-                f"Адрес для оплаты был выдан менее 24ч назад.\n"
-                f"Осталось {hours_left}ч, прежде чем Вы можете запросить новый.\n"
-                f"Ваш текущий актуальный адрес для оплаты:\n{deposit_address}",
-                reply_markup=main_menu
+                "Адрес для оплаты был выдан менее 24 ч назад.\n"
+                f"Осталось примерно {hours_left} ч, прежде чем вы сможете запросить новый.\n"
+                f"Ваш текущий адрес для оплаты:\n{deposit_address}",
+                reply_markup=main_menu,
             )
             return
-        else:
-            supabase_client.reset_deposit_address_and_privkey(user['id'])
+
+    # 24 ч прошли — адрес обнуляем
+        supabase_client.reset_deposit_address_and_privkey(user["id"])
 
     # Генерация нового адреса (если используете счётчик):
     # new_index = supabase_client.increment_deposit_index(user["id"])

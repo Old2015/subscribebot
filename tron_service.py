@@ -14,6 +14,8 @@ from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
 
 log = logging.getLogger(__name__)
 
+
+
 # ────────────────────────────────────────────────────────────────
 # 1.  Константы / конфиг
 # ────────────────────────────────────────────────────────────────
@@ -28,6 +30,16 @@ MIN_LEFTOVER_SUN = 1_000_000  # 1 TRX — оставляем на будущие
 # ────────────────────────────────────────────────────────────────
 # helper: POST с ретраями
 # ────────────────────────────────────────────────────────────────
+
+
+def as_utc(dt):
+    """Вернёт datetime с tzinfo=UTC; если dt=None – None."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+
 def tron_post(url: str, *, json: Optional[dict] = None,
               timeout: int = 10, retries: int = 3) -> dict:
     """POST к TronGrid с 3-кратным ретраем."""
@@ -319,6 +331,9 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         dep_priv  = row["deposit_privkey"]
         created   = row["deposit_created_at"]
 
+        if created.tzinfo is None:                 # делаем aware в UTC
+            created = created.replace(tzinfo=timezone.utc)
+
         # 1) если 24 ч прошло и баланса нет — обнуляем адрес
         if (datetime.now(timezone.utc) - created).total_seconds() > 24 * 3600:
             if get_usdt_balance(dep_addr) == 0:
@@ -334,18 +349,29 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             usdt * config.DAYS_FOR_USDT / config.SUBSCRIPTION_PRICE_USDT
         )
 
-        # берём самые поздние из now / trial_end / subscription_until
-        user = supabase_client.get_user_by_id(user_id)
-        now_utc      = datetime.now(timezone.utc)
-        trial_end  = user.get("trial_end")          # может быть None
-        sub_end    = user.get("subscription_end")   # может быть None
-        base_start   = max(d for d in (now_utc, trial_end, sub_end) if d)
+        # ── ищем данные пользователя по Telegram-ID ──────────────────────────────
+        user = supabase_client.get_user_by_telegram_id(tg_id)
+        if not user:
+            log.error("User tg=%s not found while processing deposit %s", tg_id, dep_addr)
+            continue                                   # пропускаем запись
 
-        new_until = base_start + timedelta(days=days_paid)
-        supabase_client.update_subscription_end(user_id, new_until)
+        now_utc       = datetime.now(timezone.utc)
+        trial_end = as_utc(user.get("trial_end"))         # конец триала, может быть None
+        sub_end   = as_utc(user.get("subscription_end"))   # конец подписки, может быть None
 
+# выбираем самую позднюю из «сейчас / trial_end / subscription_end»
+        base_start = max(d for d in (now_utc, trial_end, sub_end) if d)
+
+# days_paid вычисляете выше (как и раньше)
+        new_end = base_start + timedelta(days=days_paid)
+
+# ── ОБНОВЛЯЕМ базу с правильной функцией / полем ────────────────────────
+        supabase_client.update_subscription_end(user_id, new_end)
+
+# ── уведомляем пользователя ─────────────────────────────────────────────
         start_str = base_start.astimezone().strftime("%d.%m.%Y")
-        end_str   = new_until.astimezone().strftime("%d.%m.%Y")
+        end_str   = new_end.astimezone().strftime("%d.%m.%Y")
+
 
         try:
             await bot.send_message(
