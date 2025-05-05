@@ -159,7 +159,7 @@ async def main() -> None:
 
     hour, minute = map(int, DAILY_ANALYSIS_TIME.split(":"))
     scheduler.add_job(scheduled_daily_job, "cron", hour=hour, minute=minute)
-    scheduler.add_job(scheduled_daily_unfreeze, "cron", hour=hour, minute=minute)
+    # scheduler.add_job(scheduled_daily_unfreeze, "cron", hour=hour, minute=minute) разморозку не используем
     scheduler.start()
 
     log.info("Dispatcher setup complete. Starting polling.")

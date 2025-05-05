@@ -340,3 +340,10 @@ def update_subscription_end(user_id: int, new_until: datetime) -> None:
             """,
             (new_until, user_id)
         )
+
+def get_all_users():
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM users")
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in rows]

@@ -1,68 +1,98 @@
+# daily_tasks.py
+import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from aiogram import Bot
 import config
 import supabase_client
-from aiogram import Bot
 
 log = logging.getLogger(__name__)
 
+RATE_LIMIT  = 0.06             # ~16-17 msg/сек
+NOTIFY_DAYS = (7, 3, 1)        # напоминать заранее
+
+def as_utc(dt):
+    return dt if (dt and dt.tzinfo) else (dt and dt.replace(tzinfo=timezone.utc))
+
 async def run_daily_tasks(bot: Bot):
     """
-    Каждый день:
-    1. Уведомляем trial-пользователей, сколько осталось.
-    2. Удаляем тех, у кого trial_end < now и нет подписки, subscription_end < now
-    3. Уведомляем подписчиков, сколько осталось.
+    • Напоминаем о скором окончании доступа (7/3/1 день).
+    • Если триал/подписка уже закончились — уведомляем и кикаем пользователя.
     """
-    log.info("Running daily tasks...")
+    log.info("Running daily tasks…")
+    stats = {"trial_warn": 0, "sub_warn": 0, "kicked": 0}
 
-    # 1) Получить всех пользователей
-    with supabase_client._get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users")
-            rows = cur.fetchall()
-            cols = [desc[0] for desc in cur.description]
-            all_users = [dict(zip(cols, r)) for r in rows]
+    users = supabase_client.get_all_users()          # SELECT * FROM users
+    now   = datetime.now(timezone.utc)
 
-    now = datetime.now()
+    for user in users:
+        tg_id       = user["telegram_id"]
+        trial_end   = as_utc(user.get("trial_end"))
+        sub_start   = as_utc(user.get("subscription_start"))
+        sub_end     = as_utc(user.get("subscription_end"))
 
-    for user in all_users:
-        user_id = user["id"]
-        tg_id = user["telegram_id"]
-        trial_end = user.get("trial_end")
-        sub_end = user.get("subscription_end")  # может быть None
-        # 1) Trial active?
-        if trial_end and trial_end > now:
-            days_left = (trial_end - now).days
+        has_active_sub  = sub_end and sub_end > now
+        sub_future_only = sub_start and sub_start > now
+        trial_active    = trial_end and trial_end > now
+
+        # 1. Напоминания о скором окончании --------------------------------
+        if trial_active:
+            days_left = (trial_end.date() - now.date()).days
+            if days_left in NOTIFY_DAYS:
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"Тестовый доступ заканчивается через {days_left} дн. "
+                        f"({trial_end.strftime('%d.%m.%Y')}).",
+                    )
+                    stats["trial_warn"] += 1
+                except Exception as e:
+                    log.error("Trial notice failed for %s: %s", tg_id, e)
+                await asyncio.sleep(RATE_LIMIT)
+
+        if has_active_sub:
+            days_left = (sub_end.date() - now.date()).days
+            if days_left in NOTIFY_DAYS:
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"Подписка заканчивается через {days_left} дн. "
+                        f"({sub_end.strftime('%d.%m.%Y')}).",
+                    )
+                    stats["sub_warn"] += 1
+                except Exception as e:
+                    log.error("Sub notice failed for %s: %s", tg_id, e)
+                await asyncio.sleep(RATE_LIMIT)
+
+        # 2. Доступ истёк → уведомляем и кикаем ----------------------------
+        if (not has_active_sub) and (not trial_active) and (not sub_future_only):
+            # a) Уведомление
             try:
                 await bot.send_message(
-                    chat_id=tg_id,
-                    text=f"У вас ещё активен тестовый доступ, осталось {days_left} дней."
+                    tg_id,
+                    "Ваш доступ к TradingGroup завершён. "
+                    "Чтобы восстановить доступ, оформите подписку.",
+                    disable_notification=True,
                 )
             except Exception as e:
-                log.error(f"Error sending trial info to user {tg_id}: {e}")
-        # 2) Trial ended, no subscription => remove
-        elif (trial_end and trial_end < now) and (not sub_end or sub_end < now):
-            # удаляем
+                log.warning("Cannot send expire notice to %s: %s", tg_id, e)
+
+            await asyncio.sleep(RATE_LIMIT)
+
+            # b) Кикаем без последующего unban
             try:
                 await bot.ban_chat_member(
                     chat_id=config.PRIVATE_GROUP_ID,
-                    user_id=tg_id
+                    user_id=tg_id,
+                    revoke_messages=True,
                 )
-                await bot.send_message(
-                    tg_id,
-                    text="Тестовый доступ закончился, у вас нет подписки. Вы удалены из группы."
-                )
+                stats["kicked"] += 1
             except Exception as e:
-                log.error(f"Error removing user {tg_id}: {e}")
-        # 3) subscription active => сообщаем сколько осталось
-        elif sub_end and sub_end > now:
-            sub_days_left = (sub_end - now).days
-            try:
-                await bot.send_message(
-                    chat_id=tg_id,
-                    text=f"Ваша подписка действует до {sub_end}. Осталось {sub_days_left} дней."
-                )
-            except Exception as e:
-                log.error(f"Error sending sub info to user {tg_id}: {e}")
+                log.error("Kick failed for %s: %s", tg_id, e)
 
-    log.info("Daily tasks completed.")
+            await asyncio.sleep(RATE_LIMIT)
+
+    log.info(
+        "Daily tasks finished: trial_warn=%d, sub_warn=%d, kicked=%d",
+        stats["trial_warn"], stats["sub_warn"], stats["kicked"],
+    )
