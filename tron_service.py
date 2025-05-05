@@ -479,7 +479,7 @@ async def print_master_balance_at_start(bot: Bot) -> None:
                     f"`{master_addr}`\n"
                     f"*USDT*: {usdt:.2f}\n"
                     f"*TRX*:  {tot/1e6:.2f} "
-                    f"(в том числе заморожено {frozen_sun/1e6:.2f})"
+                    #f"(в том числе заморожено {frozen_sun/1e6:.2f})"
                 ),
                 parse_mode="Markdown"
             )
