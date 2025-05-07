@@ -3,17 +3,81 @@ import logging
 
 from datetime import datetime, timedelta
 from config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
-from typing import Optional
+from typing import Optional, Tuple
 log = logging.getLogger(__name__)
 
+
+# -----------------------------------------------------------------
+# Join-request ссылки храним прямо в users (invite_link + invite_expires_at)
+# -----------------------------------------------------------------
+
+
+
+
+# ─────────────────────── helpers ──────────────────────────────
 def _get_connection():
     return psycopg2.connect(
         user=DB_USER,
         password=DB_PASSWORD,
         host=DB_HOST,
         port=DB_PORT,
-        database=DB_NAME
+        database=DB_NAME,
     )
+
+# -----------------------------------------------------------------
+#  join-request-ссылки храним прямо в users (invite_link + invite_expires_at)
+# -----------------------------------------------------------------
+
+def get_invite(user_id: int) -> Tuple[Optional[str], Optional[datetime]]:
+    """
+    Возвращает (link, expires_at) или (None, None), если ссылки нет.
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT invite_link, invite_expires_at
+              FROM users
+             WHERE id = %s
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
+
+def upsert_invite(user_id: int, link: str, exp: datetime) -> None:
+    """
+    Сохраняет / обновляет ссылку (invite_link, invite_expires_at).
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+               SET invite_link        = %s,
+                   invite_expires_at  = %s
+             WHERE id = %s
+            """,
+            (link, exp, user_id),
+        )
+        conn.commit()
+
+
+def clear_invite(user_id: int) -> None:
+    """
+    Обнуляем ссылку после успешного входа.
+    """
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+               SET invite_link       = NULL,
+                   invite_expires_at = NULL
+             WHERE id = %s
+            """,
+            (user_id,),
+        )
+        conn.commit()
+
 
 def check_db_structure():
     """
@@ -328,19 +392,21 @@ def get_subscription_(user_id: int):
             return row[0] if row else None
         
 # Добавьте или обновите функцию
-def update_subscription_end(user_id: int, new_until: datetime) -> None:
-    """
-    Обновляет поле subscription_end у пользователя.
-    """
+def set_subscription_period(user_id: int, start: datetime, end: datetime) -> None:
+    """Обновляет subscription_start + subscription_end."""
     with _get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE users
-               SET subscription_end = %s
+               SET subscription_start = %s,
+                   subscription_end   = %s
              WHERE id = %s
             """,
-            (new_until, user_id)
+            (start, end, user_id)
         )
+        conn.commit()
+
+
 
 def get_all_users():
     with _get_connection() as conn, conn.cursor() as cur:

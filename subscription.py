@@ -7,6 +7,9 @@ from aiogram import Router, types
 import config
 import supabase_client
 from tron_service import create_qr_code, generate_ephemeral_address
+from tron_service import create_join_request_link
+
+
 
 subscription_router = Router()
 log = logging.getLogger(__name__)
@@ -44,7 +47,7 @@ async def cmd_restart(message: types.Message):
     now_ts = time.time()
     if now_ts - _last_restart.get(telegram_id, 0) < RESTART_COOLDOWN:
         await message.answer(
-            "Ссылку можно запрашивать раз в 30 секунд. "
+            "Ожидание 30 секунд. "
             "Пожалуйста, подождите немного 🙂",
             reply_markup=main_menu
         )
@@ -98,28 +101,55 @@ async def cmd_restart(message: types.Message):
         )
         return
 
-    # Генерируем одноразовую ссылку, срок 24 ч
-    expire_timestamp = int(time.time()) + 24 * 3600
+ # --- выдаём / переиспользуем join-request ссылку ----------------------
     try:
-        invite_link = await config.bot.create_chat_invite_link(
+        # 1) снимаем бан (на всякий случай)
+        await config.bot.unban_chat_member(
             chat_id=config.PRIVATE_GROUP_ID,
-            name="Single-Use Link",
-            member_limit=1,
-            expire_date=expire_timestamp
-        )
-        text = (
-            "Ваша новая одноразовая ссылка для входа в группу (действует 24 ч, один вход):\n"
-            f"{invite_link.invite_link}\n\n"
-            "Если понадобится ещё одна ссылка, нажмите «Начать заново»."
-        )
-        await message.answer(text, reply_markup=main_menu)
-    except Exception as e:
-        log.error(f"Failed to create single-use invite link for user {telegram_id}: {e}")
-        await message.answer(
-            "Не удалось создать ссылку для входа. Свяжитесь с администратором.",
-            reply_markup=main_menu
+            user_id=telegram_id,
+            only_if_banned=True
         )
 
+
+        # 2) если в БД уже есть не-протухшая – переиспользуем
+ 
+
+        old_link, old_exp = supabase_client.get_invite(user["id"])
+
+        def _as_utc(dt):
+            if dt is None:
+                return None
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+        old_exp = _as_utc(old_exp)             # выравниваем tz
+
+        if old_link and old_exp and old_exp > datetime.now(timezone.utc):
+            join_link = old_link
+        else:
+            join_link = await create_join_request_link(
+                bot=config.make_bot(),
+                chat_id=config.PRIVATE_GROUP_ID,
+                title="Restart join-request",
+            )
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            supabase_client.upsert_invite(user["id"], join_link, expires_at)
+
+
+        # 4) отдаём кнопку
+        btn = types.InlineKeyboardButton(text="Войти в группу", url=join_link)
+        kb  = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
+        await message.answer(
+            "Нажмите кнопку ниже и подтвердите заявку — бот одобрит её автоматически.",
+            reply_markup=kb
+        )
+
+
+    except Exception as e:
+        log.error("restart join-link error for %s: %s", telegram_id, e)
+        await message.answer(
+            "🚫 Не удалось выдать ссылку. Попробуйте позже или напишите администратору.",
+            reply_markup=main_menu
+        )
 
 @subscription_router.message(lambda msg: msg.text == "Статус подписки")
 async def cmd_status(message: types.Message):
@@ -193,7 +223,7 @@ async def cmd_status(message: types.Message):
     # 2) оплаченная подписка (если есть)
     if sub_end and sub_end > now_utc:
         subs_start_db = as_utc(user.get("subscription_start"))
-        paid_start = max(d for d in (trial_end, subs_start_db, sub_start) if d)
+        paid_start = subs_start_db or access_end
         paid_start_str  = paid_start.astimezone(local_tz).strftime("%d.%m.%Y")
         paid_total_days = (sub_end.date() - paid_start.date()).days
 

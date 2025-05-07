@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from aiogram import Router, types
 from aiogram.filters import Command
 import logging
@@ -9,6 +9,8 @@ import supabase_client
 # Импортируем main_menu из subscription.py, 
 # где находятся 3 кнопки: "Статус подписки", "Оформить подписку", "Начать заново".
 from subscription import main_menu
+from tron_service import create_join_request_link
+
 
 start_router = Router()
 log = logging.getLogger(__name__)
@@ -95,24 +97,30 @@ async def cmd_start(message: types.Message):
         expire_timestamp = int(time.time()) + 24*3600
         link_str = ""
         try:
-            invite_link = await config.bot.create_chat_invite_link(
+            join_link = await create_join_request_link(
+                bot=config.bot,
                 chat_id=config.PRIVATE_GROUP_ID,
-                name="Single-Use (new user)",
-                member_limit=1,
-                expire_date=expire_timestamp
+                title="New-user join-request"
             )
+
+            # TTL 24 ч (храним, чтобы «Начать заново» мог переиспользовать)
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            supabase_client.upsert_invite(user["id"], join_link, expires_at)
+
             link_str = (
-                f"Ссылка на вход в приватную торговую группу (действует 24 часа, один вход):\n"
-                f"{invite_link.invite_link}\n\n"
+                "Нажмите ссылку ниже, отправьте запрос — бот одобрит автоматически "
+                "(ссылка действует 24 ч, один вход):\n"
+                f"{join_link}\n\n"
                 "Если понадобится новая ссылка, нажмите «Начать заново».\n"
-                "Возникли проблемы - пишите @gwen12309."
+                "Возникли проблемы — пишите @gwen12309."
             )
         except Exception as e:
-            log.error(f"Failed to create single-use link for new user {telegram_id}: {e}")
+            log.error("Failed to create join-request for new user %s: %s", telegram_id, e)
             link_str = (
-                "Не удалось автоматически создать ссылку. Свяжитесь с админом @gwen12309"
-                "или используйте «Начать заново» позже."
+                "Не удалось автоматически создать ссылку. "
+                "Свяжитесь с админом @gwen12309 или попробуйте «Начать заново» позже."
             )
+            
 
         text = (
             f"Добро пожаловать! Вы получили доступ в TradingGroup и Вам оформлен тестовый доступ на {days_left} дн., "

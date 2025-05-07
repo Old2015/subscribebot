@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Tuple, Optional, Dict
 
 import config, supabase_client
-from aiogram import Bot
+import aiohttp
+from aiogram import Bot, types          # ← добавили types
 from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
 
 
@@ -317,6 +318,20 @@ def return_trx(dep_priv:str, dep_addr:str,
     return sign_and_broadcast(raw, dep_priv)
 
 
+#  ── helper ➜ сырой вызов Bot API (без pydantic)
+async def create_join_request_link(bot: Bot, chat_id: int, title: str) -> str:
+    """
+    Возвращает строку invite_link.  member_limit нельзя использовать
+    совместно с creates_join_request – Telegram сам ограничит «1 заявка».
+    """
+    link_obj = await bot.create_chat_invite_link(
+        chat_id            = chat_id,
+        creates_join_request = True,
+        expire_date        = int(time.time()) + 24*3600,
+        name               = title
+    )
+    return link_obj.invite_link
+
 # ────────────────────────────────────────────────────────────────
 # 9.  Основной опрос депозитов
 # ────────────────────────────────────────────────────────────────
@@ -366,7 +381,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             base_start = max(d for d in (now_utc, trial_end, sub_end) if d)
             new_end    = base_start + timedelta(days=days_paid)
 
-            supabase_client.update_subscription_end(user_id, new_end)
+            supabase_client.set_subscription_period(user_id, base_start, new_end)
 
             # создаём pending-запись
             pending_id = supabase_client.create_pending_payment(
@@ -435,27 +450,49 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         supabase_client.reset_deposit_address_and_privkey(user_id)
 
         # auto-invite
+
         try:
-            await bot.unban_chat_member(
-                chat_id=config.PRIVATE_GROUP_ID,
-                user_id=tg_id,
-                only_if_banned=True
-            )
-            invite = await bot.create_chat_invite_link(
-                chat_id=config.PRIVATE_GROUP_ID,
-                name="Auto-invite after payment",
-                member_limit=1,
-                expire_date=int(time.time()) + 24 * 3600
-            )
+            # 1) снимаем бан, если был
+            await bot.unban_chat_member(config.PRIVATE_GROUP_ID, tg_id, only_if_banned=True)
+
+            # 2) если старая ссылка ещё жива — переиспользуем
+            old_link, old_exp = supabase_client.get_invite(user_id)
+            # --- выравниваем tz -------------------------------------------------------
+            if old_exp and old_exp.tzinfo is None:          # пришла naive-дата
+                old_exp = old_exp.replace(tzinfo=timezone.utc)
+
+            if old_link and old_exp and old_exp > datetime.now(timezone.utc):
+                join_link = old_link
+                expires_at = old_exp
+            else:
+                # 3) создаём новую join-request ссылку
+                join_link = await create_join_request_link(
+                    bot=config.bot,           # ← только config.bot
+                    chat_id=config.PRIVATE_GROUP_ID,
+                    title="Join-request after paymen"
+                )
+
+
+
+                expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+                supabase_client.upsert_invite(user_id, join_link, expires_at)
+
+    # 4) отправляем кнопку
+            btn = types.InlineKeyboardButton(text="Войти в группу", url=join_link)
+            kb  = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
+            
             await bot.send_message(
-                tg_id,
-                "🎉 *Подписка активна!* Ниже ваша ссылка для входа в группу "
-                "(действует 24 ч, один вход):\n"
-                f"{invite.invite_link}",
-                parse_mode="Markdown"               
+               tg_id,
+                "🎉 *Подписка активна!* Нажмите кнопку ниже и подтвердите запрос — "
+               "бот одобрит его автоматически.",
+                parse_mode="Markdown",
+                reply_markup=kb
             )
+
         except Exception as e:
-            log.error("Auto-invite failed for %s: %s", tg_id, e)
+            log.error("Cannot create/send join-request link for %s: %s", tg_id, e)
+
+
 
         log.info("✅ %.2f USDT -> master (tx %s); payment %s = PAID", usdt, txid, pending_id)
 
@@ -501,4 +538,5 @@ async def print_master_balance_at_start(bot: Bot) -> None:
             )
         except Exception as e:
             log.warning(f"Cannot notify admin: {e}")
+
 

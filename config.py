@@ -1,12 +1,18 @@
 import os
 from dotenv import load_dotenv
 from aiogram import Bot
+import aiohttp, ssl
+from aiogram.client.session.aiohttp import AiohttpSession   # ← новый импорт
+from aiogram.client.default import DefaultBotProperties
+from typing import Optional 
+import certifi 
+
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "TEST")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-PRIVATE_GROUP_ID = os.getenv("PRIVATE_GROUP_ID")
+ADMIN_CHAT_ID     = int(os.getenv("ADMIN_CHAT_ID",   "0") or 0)
+PRIVATE_GROUP_ID  = int(os.getenv("PRIVATE_GROUP_ID","0") or 0)
 
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -47,4 +53,28 @@ FREE_TRIAL_DAYS = int(os.getenv("FREE_TRIAL_DAYS", "10"))
 CHECK_INTERVAL_MIN = int(os.getenv("CHECK_INTERVAL_MIN", "10"))
 DAILY_ANALYSIS_TIME = os.getenv("DAILY_ANALYSIS_TIME", "09:00")
 
-bot = Bot(token=BOT_TOKEN)
+
+# ─── доверяем сертификатам Mozilla заранее ──────────────────────
+#  ♦  Python (особенно macOS-сборка) может «не видеть» системные CA.
+#  ♦  Достаём свежий pem из certifi и объявляем его дефолтным.
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+# ----------------------------------------------------------------
+
+_bot_singleton: Optional[Bot] = None         # кеш-одиночка
+
+
+def make_bot() -> Bot:
+    """
+    Возвращает singleton-экземпляр Bot с *обычной* aiohttp-сессией,
+    но уже знающей о корневых CA (см. строку с SSL_CERT_FILE выше).
+    """
+    global _bot_singleton                    # pylint: disable=global-statement
+    if _bot_singleton:
+        return _bot_singleton
+
+    _bot_singleton = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode="HTML"),   # ≤ aiogram-3.20
+        # session=None → aiogram сам создаст AiohttpSession c правильным SSL
+    )
+    return _bot_singleton
