@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 
@@ -151,16 +151,12 @@ async def cmd_restart(message: types.Message):
             reply_markup=main_menu
         )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# «СТАТУС ПОДПИСКИ»
-# ─────────────────────────────────────────────────────────────────────────────
 @subscription_router.message(lambda msg: msg.text == "Статус подписки")
 async def cmd_status(message: types.Message):
     """
-    Показываем текущее состояние доступа. Логика:
-      • Общий диапазон = min( trial_start | sub_start ) … max( trial_end | sub_end )
-      • Бесплатные дни = trial_start … trial_end            (если есть и не закончились)
-      • Платные дни     = max(sub_start, trial_end+1) … sub_end
+    Показываем текущее состояние доступа в одном стиле с платёжным уведомлением:
+      ─ базовый диапазон доступа
+      ─ (опционально) блок «В том числе …» про тестовый период и оплаченные дни
     """
     log.info("User %s pressed 'Статус подписки'", message.from_user.id)
 
@@ -172,91 +168,72 @@ async def cmd_status(message: types.Message):
         )
         return
 
-    # ------------------------------ начало изменённого фрагмента -----------------
-    # приводим naive → UTC-aware
+    # --- даты из БД --------------------------------------------------------
+    trial_end = user.get("trial_end")              # datetime | None
+    sub_start = user.get("subscription_start")
+    sub_end   = user.get("subscription_end")
+
+    # приводим naive → UTC-aware, чтобы корректно сравнивать
     def as_utc(dt):
         if dt is None:
             return None
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-    trial_start = as_utc(user.get("trial_start"))     # ← добавили (может быть None)
-    # если trial_start отсутствует, берём:
-    #   • subscription_start  (самый ранний фиксированный момент)
-    #   • или access_start    (fallback, совпадает с subscription_start либо сегодня)
-    trial_start_eff = trial_start or sub_start or access_start
-    trial_end   = as_utc(user.get("trial_end"))
-    sub_start   = as_utc(user.get("subscription_start"))
-    sub_end     = as_utc(user.get("subscription_end"))
+    trial_end = as_utc(trial_end)
+    sub_start = as_utc(sub_start)
+    sub_end   = as_utc(sub_end)
 
-    now_utc  = datetime.now(timezone.utc)
-    local_tz = datetime.now().astimezone().tzinfo
+    # --- расчёт базового диапазона доступа --------------------------------
+    now_utc   = datetime.now(timezone.utc)
+    local_tz  = datetime.now().astimezone().tzinfo
 
-    # -------------------------------------------------------------------------
-    # 0) определяем “базовое” окно доступа
-    # -------------------------------------------------------------------------
+    # если подписка активна — конец = sub_end; иначе если триал активен — trial_end
     if sub_end and sub_end > now_utc:
         access_end = sub_end
-        access_start = sub_start or now_utc
     elif trial_end and trial_end > now_utc:
         access_end = trial_end
-        access_start = trial_start or now_utc
     else:
         await message.answer(
-            "У вас нет активного доступа.\n"
-            "Оформить подписку → «Оформить подписку». "
-            "Вопросы — @gwen12309",
+            "У вас нет активного доступа.\nОформить подписку → нажмите «Оформить подписку». \nТехнические вопросы - админ @gwen12309",
             reply_markup=main_menu,
         )
         return
 
-    access_start_str = access_start.astimezone(local_tz).strftime("%d.%m.%Y")
-    access_end_str   = access_end.astimezone(local_tz).strftime("%d.%m.%Y")
+    today_str = datetime.now(local_tz).strftime("%d.%m.%Y")
+    end_str   = access_end.astimezone(local_tz).strftime("%d.%m.%Y")
 
     lines = [
         "ℹ️ *Статус доступа к TradingGroup*",
-        f"Доступ разрешён с {access_start_str} по {access_end_str}."
+        f"Доступ к TradingGroup разрешён\nс {today_str} по {end_str}.",
     ]
 
-    details_exist = False            # нужно ли выводить раздел “В том числе:”
+    # --- доп. блок, если триал ещё не завершился --------------------------
+    added_header = False     # чтобы вывести заголовок ровно один раз
 
-    # -------------------------------------------------------------------------
-    # 1) БЕСПЛАТНЫЙ ТЕСТ: если триал активен
-    # -------------------------------------------------------------------------
+    # 1) тестовый период
     if trial_end and trial_end > now_utc:
-        trial_start_l = trial_start_eff.astimezone(local_tz)
-        trial_end_l   = trial_end.astimezone(local_tz)
-        trial_days    = (trial_end.date() - trial_start_eff.date()).days
+        trial_end_str = trial_end.astimezone(local_tz).strftime("%d.%m.%Y")
+        trial_days    = (trial_end.date() - now_utc.date()).days
         lines.append("\nВ том числе:")
         added_header = True
         lines.append(
-          f"• c {trial_start_l:%d.%m.%Y} по {trial_end_l:%d.%m.%Y} — {trial_days} дн. бесплатного теста"
+            f"• с {today_str} по {trial_end_str} — {trial_days} дн. тестового периода."
         )
 
-    # -------------------------------------------------------------------------
-    # 2) ОПЛАЧЕННАЯ ПОДПИСКА
-    # -------------------------------------------------------------------------
+    # 2) оплаченная подписка (если есть)
     if sub_end and sub_end > now_utc:
-        # если тест ещё идёт → платная часть начинается на 1 день позже trial_end
-        if trial_end and trial_end > now_utc:
-            paid_start = trial_end + timedelta(days=1)
-        else:
-            paid_start = sub_start or now_utc          # fallback
+        subs_start_db = as_utc(user.get("subscription_start"))
+        paid_start = subs_start_db or access_end
+        paid_start_str  = paid_start.astimezone(local_tz).strftime("%d.%m.%Y")
+        paid_total_days = (sub_end.date() - paid_start.date()).days
 
-        paid_start_str = paid_start.astimezone(local_tz).strftime("%d.%m.%Y")
-        paid_days      = (sub_end.date() - paid_start.date()).days
-
-        if not details_exist:
+        if not added_header:
             lines.append("\nВ том числе:")
         lines.append(
-            f"• c {paid_start_str} по {access_end_str} — {paid_days} дн. оплаченной подписки"
+            f"• с {paid_start_str} по {end_str} — {paid_total_days} дн. оплаченной подписки."
         )
-# ------------------------------ конец изменённого фрагмента ------------------
-    await message.answer(
-        "\n".join(lines),
-        parse_mode="Markdown",
-        reply_markup=main_menu,
-    )
 
+    await message.answer("\n".join(lines), parse_mode="Markdown", reply_markup=main_menu)
 
 
 @subscription_router.message(lambda msg: msg.text == "Оформить подписку")

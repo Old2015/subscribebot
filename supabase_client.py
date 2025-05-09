@@ -103,8 +103,18 @@ def create_user_custom_trial(telegram_id: int, username: str, trial_end: datetim
     with _get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO users (telegram_id, username, trial_end, created_at)
-                VALUES (%s, %s, %s, NOW())
+                INSERT INTO users (
+                    telegram_id,
+                    username,
+                    trial_start,   -- 👈
+                    trial_end,
+                    created_at)
+                VALUES (
+                    %s,
+                    %s,
+                    NOW(),         -- trial_start = сейчас
+                    %s,            -- trial_end   = параметр функции
+                    NOW())
                 RETURNING *
             """, (telegram_id, username, trial_end))
             row = cur.fetchone()
@@ -140,8 +150,18 @@ def create_user_with_trial(telegram_id: int, username: str, trial_days: int):
     with _get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO users (telegram_id, username, trial_end, created_at)
-                VALUES (%s, %s, NOW() + interval '%s day', NOW())
+                INSERT INTO users (
+                    telegram_id,
+                    username,
+                    trial_start,      -- 👈 новая колонка
+                    trial_end,
+                    created_at)
+                VALUES (
+                    %s,
+                    %s,
+                    NOW(),                               -- trial_start = сейчас
+                    NOW() + interval '%s day',           -- trial_end  = +N дней
+                    NOW()) 
                 RETURNING *
             """, (telegram_id, username, trial_days))
             row = cur.fetchone()
