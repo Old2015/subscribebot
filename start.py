@@ -42,6 +42,17 @@ async def cmd_start(message: types.Message):
     now = datetime.now()
 
     user = supabase_client.get_user_by_telegram_id(telegram_id)
+    # start.py  (в начале cmd_start, до create_join_request_link)
+    try:
+        await config.bot.unban_chat_member(
+            chat_id=config.PRIVATE_GROUP_ID,
+            user_id=telegram_id,
+            only_if_banned=True         # достаточно True
+        )
+    except Exception as e:
+        log.debug("unban (start) noop or fail: %s", e)
+
+
     if not user:
         # ============== НОВЫЙ ПОЛЬЗОВАТЕЛЬ ==============
 
@@ -79,11 +90,25 @@ async def cmd_start(message: types.Message):
         #    Если нет, напишем / либо используем create_user_with_trial(), 
         #    но тогда придётся обновить trial_end вручную:
 
-        supabase_client.create_user_custom_trial(
+        # создаём нового пользователя и сразу берём его id
+        new_user = supabase_client.create_user_custom_trial(
             telegram_id=telegram_id,
             username=username,
             trial_end=trial_end_datetime
         )
+        if not new_user:
+            log.error("DB insert for new user %s failed", telegram_id)
+            await message.answer(
+                "Ошибка базы данных. Попробуйте позже или напишите администратору.",
+                reply_markup=main_menu
+            )
+            return
+        new_user_id = new_user["id"]
+
+
+
+
+
         # Либо:
         # new_user = supabase_client.create_user_with_trial(telegram_id, username, config.FREE_TRIAL_DAYS)
         #  а потом update trial_end = trial_end_datetime. 
@@ -95,7 +120,10 @@ async def cmd_start(message: types.Message):
 
         # 4) Генерируем одноразовую ссылку
         expire_timestamp = int(time.time()) + 24*3600
-        link_str = ""
+        join_kb = None        # inline-клавиатура
+        link_comment = ""     # текст, который покажем рядом с кнопкой
+
+
         try:
             join_link = await create_join_request_link(
                 bot=config.bot,
@@ -104,30 +132,51 @@ async def cmd_start(message: types.Message):
             )
 
             # TTL 24 ч (храним, чтобы «Начать заново» мог переиспользовать)
+            # Cохраняем ссылку/TTL — как было
             expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-            supabase_client.upsert_invite(user["id"], join_link, expires_at)
+            supabase_client.upsert_invite(new_user_id, join_link, expires_at)
 
-            link_str = (
-                "Нажмите ссылку ниже, отправьте запрос — бот одобрит автоматически "
-                "(ссылка действует 24 ч, один вход):\n"
-                f"{join_link}\n\n"
+            # --- формируем инлайн-кнопку ---
+            btn = types.InlineKeyboardButton(text="Войти в группу", url=join_link)
+            join_kb = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
+
+            link_comment = (
+                "Нажмите кнопку ниже и отправьте запрос — бот одобрит автоматически "
+                "(ссылка действует 24 ч, один вход).\n\n"
                 "Если понадобится новая ссылка, нажмите «Начать заново».\n"
                 "Возникли проблемы — пишите @gwen12309."
             )
         except Exception as e:
             log.error("Failed to create join-request for new user %s: %s", telegram_id, e)
-            link_str = (
+            link_comment = (
                 "Не удалось автоматически создать ссылку. "
                 "Свяжитесь с админом @gwen12309 или попробуйте «Начать заново» позже."
             )
-            
+
 
         text = (
             f"Добро пожаловать! Вы получили доступ в TradingGroup и Вам оформлен тестовый доступ на {days_left} дн., "
             f"до {trial_end_str}.\n Внимательно изучите документацию в закрепе группы.\n\n"
-            f"{link_str}"
+            f"{link_comment}"
         )
-        await message.answer(text, reply_markup=main_menu)
+        # если кнопка есть — отправляем вместе с ней, иначе обычное меню
+        if join_kb:
+            await message.answer(text, reply_markup=join_kb)
+        else:
+            await message.answer(text, reply_markup=main_menu)
+
+        if join_kb:
+            # 1️⃣ сообщение с инлайн-кнопкой «Войти в группу»
+             await message.answer(text, reply_markup=join_kb)
+            # 2️⃣ отдельным сообщением «достаём» основное меню
+            #await message.answer(
+            #    "Выберите действие из меню ↓",
+            #    reply_markup=main_menu
+            #)
+        else:
+            # если ссылку создать не удалось — сразу показываем меню
+            await message.answer(text, reply_markup=main_menu)
+
 
     else:
         # ============== СУЩЕСТВУЮЩИЙ ПОЛЬЗОВАТЕЛЬ ==============

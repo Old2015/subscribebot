@@ -1,5 +1,6 @@
 # join_router.py
 from datetime import datetime, timezone
+from subscription import main_menu   # ← добавьте
 
 from aiogram import Router, Bot, types         # F не нужен → убрал
 import config, supabase_client, logging
@@ -46,6 +47,11 @@ async def handle_join_request(event: types.ChatJoinRequest, bot: Bot):
 
     # 5) личное сообщение (не обязательно)
     try:
-        await bot.send_message(user_id, "✅ Заявка одобрена! Добро пожаловать в TradingGroup.")
-    except Exception:
-        pass
+        await bot.send_message(
+            chat_id=user_id,
+            text="✅ Заявка одобрена! Добро пожаловать в TradingGroup.",
+            reply_markup=main_menu              # ← показываем меню
+        )
+    except Exception as e:
+        log.warning("Не смог отправить приветственное сообщение пользователю %s: %s",
+                    user_id, e)
