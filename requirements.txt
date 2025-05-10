@@ -5,3 +5,6 @@ qrcode
 Pillow
 apscheduler
 bip_utils
+requests
+base58
+pysha3
