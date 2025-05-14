@@ -4,6 +4,7 @@
 import logging
 from datetime import datetime, timezone
 from aiogram import Bot
+from tron_service import derive_master, get_usdt_balance, get_total_balance_v2
 import config
 import supabase_client
 
@@ -54,8 +55,15 @@ async def send_admin_report(bot: Bot):
     sub_cnt   = metrics["sub_active"][0]
 
     today = datetime.now(timezone.utc).astimezone().strftime("%d.%m.%Y")
+
+    master_addr = derive_master()
+    usdt_master = get_usdt_balance(master_addr)
+    trx_total = get_total_balance_v2(master_addr)    # Sun → TRX позже
+
     text = (
         f"*Ежедневный отчёт — {today}*\n\n"
+        f"• USDT на мастер счёте: `{usdt_master:.2f}`\n"
+        f"• TRX на мастер счёте: `{trx_total/1e6:.2f}`\n\n"
         f"• Всего пользователей в базе: **{users_tot}**\n"
         f"• Всего платежей в базе: **{pays_tot}** на сумму **{usdt_tot:.2f} USDT**\n\n"
         f"• Новых пользователей за текущий месяц: **{users_mon}**\n"
