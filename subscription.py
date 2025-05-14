@@ -203,8 +203,8 @@ async def cmd_status(message: types.Message):
     else:
         await message.answer(
             "У вас нет активного доступа.\n"
-            "Оформить подписку → «Оформить подписку». "
-            "Вопросы — @gwen12309",
+            "Для доступа в группу нажмите → «Оформить подписку». "
+            "Технические вопросы — @gwen12309",
             reply_markup=main_menu,
         )
         return

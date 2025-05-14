@@ -99,7 +99,7 @@ async def cmd_start(message: types.Message):
         if not new_user:
             log.error("DB insert for new user %s failed", telegram_id)
             await message.answer(
-                "Ошибка базы данных. Попробуйте позже или напишите администратору.",
+                "Ошибка базы данных. Попробуйте позже или напишите администратору @gwen12309",
                 reply_markup=main_menu
             )
             return
@@ -213,7 +213,7 @@ async def cmd_start(message: types.Message):
                 )
             else:
                 await message.answer(
-                    "Странное состояние подписки. Попробуйте «Начать заново» или свяжитесь с админом.",
+                    "Странное состояние подписки. Попробуйте «Начать заново» или свяжитесь с админом @gwen12309",
                     reply_markup=main_menu
                 )
         else:
