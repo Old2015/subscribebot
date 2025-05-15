@@ -56,14 +56,17 @@ async def send_admin_report(bot: Bot):
 
     today = datetime.now(timezone.utc).astimezone().strftime("%d.%m.%Y")
 
-    master_addr = derive_master()
-    usdt_master = get_usdt_balance(master_addr)
-    trx_total = get_total_balance_v2(master_addr)    # Sun → TRX позже
+    
+    # ───── 2. данные мастер‑кошелька ──────────────────────────
+    master_addr, _ = derive_master()                       # ← РАЗВОРАЧИВАЕМ кортеж
+    usdt_master    = get_usdt_balance(master_addr)         # str → float
+    _, total_sun   = get_total_balance_v2(master_addr)     # ← берём total_sun
+    trx_master     = total_sun / 1_000_000                 # Sun → TRX
+
 
     text = (
         f"*Ежедневный отчёт — {today}*\n\n"
-        f"• USDT на мастер счёте: `{usdt_master:.2f}`\n"
-        f"• TRX на мастер счёте: `{trx_total/1e6:.2f}`\n\n"
+        f"• Баланс мастер‑кошелька: {usdt_master:.2f} USDT | {trx_master:.2f} TRX\n\n"
         f"• Всего пользователей в базе: **{users_tot}**\n"
         f"• Всего платежей в базе: **{pays_tot}** на сумму **{usdt_tot:.2f} USDT**\n\n"
         f"• Новых пользователей за текущий месяц: **{users_mon}**\n"
