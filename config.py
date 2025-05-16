@@ -48,10 +48,10 @@ if FREE_TRIAL_GLOBAL_END:
     from datetime import datetime
     GLOBAL_END_DATE = datetime.strptime(FREE_TRIAL_GLOBAL_END, "%Y-%m-%d").date()
 
-FREE_TRIAL_DAYS = int(os.getenv("FREE_TRIAL_DAYS", "10"))
+FREE_TRIAL_DAYS = int(os.getenv("FREE_TRIAL_DAYS", "7"))
 
-CHECK_INTERVAL_MIN = int(os.getenv("CHECK_INTERVAL_MIN", "10"))
-DAILY_ANALYSIS_TIME = os.getenv("DAILY_ANALYSIS_TIME", "09:00")
+CHECK_INTERVAL_MIN = int(os.getenv("CHECK_INTERVAL_MIN", "20"))
+DAILY_ANALYSIS_TIME = os.getenv("DAILY_ANALYSIS_TIME", "00:01")
 
 
 # ─── доверяем сертификатам Mozilla заранее ──────────────────────
