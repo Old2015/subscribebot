@@ -167,7 +167,7 @@ async def cmd_start(message: types.Message):
 
             # ② сразу показываем постоянное меню
             await message.answer(
-                "Выберите действие из меню ↓",
+                "✅",
                 reply_markup=main_menu
             )
         else:

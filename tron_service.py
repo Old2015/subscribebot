@@ -528,7 +528,7 @@ async def print_master_balance_at_start(bot: Bot) -> None:
             await bot.send_message(
                 admin_chat,
                 (
-                    "🏁 *Бот запущен*\n"
+                    "🏁 *Бот перезапущен*\n"
                     f"`{master_addr}`\n"
                     f"*USDT*: {usdt:.2f}\n"
                     f"*TRX*:  {tot/1e6:.2f} "
