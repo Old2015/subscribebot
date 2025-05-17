@@ -159,24 +159,20 @@ async def cmd_start(message: types.Message):
             f"до {trial_end_str}.\n Внимательно изучите документацию в закрепе группы.\n\n"
             f"{link_comment}"
         )
-        # если кнопка есть — отправляем вместе с ней, иначе обычное меню
+
+        # --- отправляем сообщение ОДИН раз ---
         if join_kb:
+            # ① приветствие + инлайн-кнопка
             await message.answer(text, reply_markup=join_kb)
-        else:
-            await message.answer(text, reply_markup=main_menu)
 
-        if join_kb:
-            # 1️⃣ сообщение с инлайн-кнопкой «Войти в группу»
-             await message.answer(text, reply_markup=join_kb)
-            # 2️⃣ отдельным сообщением «достаём» основное меню
-            #await message.answer(
-            #    "Выберите действие из меню ↓",
-            #    reply_markup=main_menu
-            #)
+            # ② сразу показываем постоянное меню
+            await message.answer(
+                "Выберите действие из меню ↓",
+                reply_markup=main_menu
+            )
         else:
-            # если ссылку создать не удалось — сразу показываем меню
+            # ссылка не создалась ― просто выводим меню
             await message.answer(text, reply_markup=main_menu)
-
 
     else:
         # ============== СУЩЕСТВУЮЩИЙ ПОЛЬЗОВАТЕЛЬ ==============
