@@ -191,8 +191,12 @@ async def cmd_status(message: types.Message):
 
     # ---------- [2] базовый интервал доступа ----------
     if sub_end and sub_end > now_utc:
-        access_start = sub_start or now_utc
-        access_end   = sub_end
+        # если у пользователя был тест – считаем, что доступ начался ещё с него
+        if trial_start:
+            access_start = trial_start
+        else:
+            access_start = sub_start or now_utc
+        access_end = sub_end
     elif trial_end and trial_end > now_utc:
         access_start = trial_start or now_utc
         access_end   = trial_end
