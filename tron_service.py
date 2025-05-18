@@ -378,7 +378,13 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             now_utc   = datetime.now(timezone.utc)
             trial_end = as_utc(user.get("trial_end"))
             sub_end   = as_utc(user.get("subscription_end"))
-            base_start = max(d for d in (now_utc, trial_end, sub_end) if d)
+
+            if trial_end and trial_end > now_utc:
+                base_start = trial_end + timedelta(days=1)   # день после триала
+            elif sub_end and sub_end > now_utc:
+                base_start = sub_end                         # продлеваем активную подписку
+            else:
+                base_start = now_utc            
             new_end    = base_start + timedelta(days=days_paid)
 
             supabase_client.set_subscription_period(user_id, base_start, new_end)
@@ -459,7 +465,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             stats_txt = f"\n📥 Получено *{usdt:.2f} USDT* от {user_ref}\n"
 
             await bot.send_message(
-                config.PRIVATE_GROUP_ID,      # ← та же группа
+                config.ADMIN_CHAT_ID,      # ← та же группа
                 stats_txt,
                 parse_mode="Markdown"
             )

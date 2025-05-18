@@ -173,33 +173,29 @@ async def cmd_status(message: types.Message):
         return
 
     # ------------------------------ начало изменённого фрагмента -----------------
-    # приводим naive → UTC-aware
+
+    # ---------- [1] подготовка дат ----------
     def as_utc(dt):
         if dt is None:
             return None
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-    trial_start = as_utc(user.get("trial_start"))     # ← добавили (может быть None)
-    # если trial_start отсутствует, берём:
-    #   • subscription_start  (самый ранний фиксированный момент)
-    #   • или access_start    (fallback, совпадает с subscription_start либо сегодня)
-    trial_start_eff = trial_start or sub_start or access_start
+    trial_start = as_utc(user.get("trial_start"))
     trial_end   = as_utc(user.get("trial_end"))
     sub_start   = as_utc(user.get("subscription_start"))
     sub_end     = as_utc(user.get("subscription_end"))
 
+
     now_utc  = datetime.now(timezone.utc)
     local_tz = datetime.now().astimezone().tzinfo
 
-    # -------------------------------------------------------------------------
-    # 0) определяем “базовое” окно доступа
-    # -------------------------------------------------------------------------
+    # ---------- [2] базовый интервал доступа ----------
     if sub_end and sub_end > now_utc:
-        access_end = sub_end
         access_start = sub_start or now_utc
+        access_end   = sub_end
     elif trial_end and trial_end > now_utc:
-        access_end = trial_end
         access_start = trial_start or now_utc
+        access_end   = trial_end
     else:
         await message.answer(
             "У вас нет активного доступа.\n"
@@ -222,12 +218,14 @@ async def cmd_status(message: types.Message):
     # -------------------------------------------------------------------------
     # 1) БЕСПЛАТНЫЙ ТЕСТ: если триал активен
     # -------------------------------------------------------------------------
+    trial_start_eff = trial_start or access_start
+
     if trial_end and trial_end > now_utc:
         trial_start_l = trial_start_eff.astimezone(local_tz)
         trial_end_l   = trial_end.astimezone(local_tz)
-        trial_days    = (trial_end.date() - trial_start_eff.date()).days
+        trial_days    = (trial_end.date() - trial_start_eff.date()).days + 1
         lines.append("\nВ том числе:")
-        added_header = True
+        details_exist = True
         lines.append(
           f"• c {trial_start_l:%d.%m.%Y} по {trial_end_l:%d.%m.%Y} — {trial_days} дн. бесплатного теста"
         )
@@ -243,7 +241,8 @@ async def cmd_status(message: types.Message):
             paid_start = sub_start or now_utc          # fallback
 
         paid_start_str = paid_start.astimezone(local_tz).strftime("%d.%m.%Y")
-        paid_days      = (sub_end.date() - paid_start.date()).days
+        paid_days      = (sub_end.date() - paid_start.date()).days + 1
+
 
         if not details_exist:
             lines.append("\nВ том числе:")
