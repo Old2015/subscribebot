@@ -448,6 +448,24 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         # --- платеж подтверждён -------------------------------------------
         supabase_client.mark_payment_paid(pending_id, txid)
         supabase_client.reset_deposit_address_and_privkey(user_id)
+        # ────────────────────────────────────────────────────────────────
+        #  📢 1. сообщение-статистика в TradingGroup
+        # ----------------------------------------------------------------
+        try:
+            urow = supabase_client.get_user_by_telegram_id(tg_id)
+            username = urow.get("username") if urow else None
+            user_ref = f"@{username}" if username else f"id {tg_id}"
+            #dt_str   = datetime.now().strftime("%d.%m.%Y %H:%M")
+            stats_txt = f"\n📥 Получено *{usdt:.2f} USDT* от {user_ref}\n"
+
+            await bot.send_message(
+                config.PRIVATE_GROUP_ID,      # ← та же группа
+                stats_txt,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            log.warning(f"Cannot send stats message: {e}")
+        # ────────────────────────────────────────────────────────────────
 
         # auto-invite
 
