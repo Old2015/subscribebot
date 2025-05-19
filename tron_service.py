@@ -12,6 +12,7 @@ import config, supabase_client
 import aiohttp
 from aiogram import Bot, types          # ← добавили types
 from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
+from utils import escape_md
 
 
 log = logging.getLogger(__name__)
@@ -354,7 +355,20 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         # если адресу >24 ч и USDT нет — обнуляем
         if (datetime.now(timezone.utc) - created).total_seconds() > 24 * 3600:
             if get_usdt_balance(dep_addr) == 0:
+                # 1. снимаем адрес
                 supabase_client.reset_deposit_address_and_privkey(user_id)
+                # 2. сообщаем пользователю
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"⛔️ Одноразовый адрес\n`{dep_addr}`\nбольше не активен "
+                        "(24-часовой срок истёк). Платежи на него не учитываются.\n\n"
+                        "Чтобы оформить или продлить подписку, нажмите "
+                        "«Оформить подписку» и получите новый адрес.",
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    log.warning("cannot notify user %s about expired addr: %s", tg_id, e)            
             continue
 
         usdt = get_usdt_balance(dep_addr)
@@ -454,13 +468,28 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         # --- платеж подтверждён -------------------------------------------
         supabase_client.mark_payment_paid(pending_id, txid)
         supabase_client.reset_deposit_address_and_privkey(user_id)
+        # уведомление, что адрес больше не нужен
+        try:
+            await bot.send_message(
+                tg_id,
+                f"✅ Платёж учтён, адрес `{dep_addr}` деактивирован.\n"
+                "Если понадобится продлить подписку в будущем — "
+                "получите свежий адрес через «Оформить подписку».",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            log.warning("cannot notify user %s about addr deactivate: %s", tg_id, e)
+
         # ────────────────────────────────────────────────────────────────
         #  📢 1. сообщение-статистика в TradingGroup
         # ----------------------------------------------------------------
         try:
             urow = supabase_client.get_user_by_telegram_id(tg_id)
             username = urow.get("username") if urow else None
-            user_ref = f"@{username}" if username else f"id {tg_id}"
+            if username:
+                user_ref = f"@{escape_md(username)}"
+            else:
+                user_ref = f"id {tg_id}"
             #dt_str   = datetime.now().strftime("%d.%m.%Y %H:%M")
             stats_txt = f"\n📥 Получено *{usdt:.2f} USDT* от {user_ref}\n"
 
@@ -472,7 +501,9 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         except Exception as e:
             log.warning(f"Cannot send stats message: {e}")
         # ────────────────────────────────────────────────────────────────
-
+        
+        # после всех переводов смотрим, не «просел» ли свободный TRX
+        await notify_if_low_trx(bot, master_addr)   
         # auto-invite
 
         try:
