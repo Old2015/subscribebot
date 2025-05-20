@@ -399,7 +399,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
                 base_start = sub_end                         # продлеваем активную подписку
             else:
                 base_start = now_utc            
-            new_end    = base_start + timedelta(days=days_paid)
+            new_end    = base_start + timedelta(days=days_paid - 1)
 
             supabase_client.set_subscription_period(user_id, base_start, new_end)
 

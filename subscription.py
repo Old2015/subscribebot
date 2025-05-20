@@ -189,6 +189,11 @@ async def cmd_status(message: types.Message):
     now_utc  = datetime.now(timezone.utc)
     local_tz = datetime.now().astimezone().tzinfo
 
+    # ── сразу после now_utc / local_tz
+    def days_inclusive(d1: date, d2: date) -> int:
+        """Разница дат с учётом обеих границ (19-21 = 3)."""
+        return (d2 - d1).days + 1
+
     # ---------- [2] базовый интервал доступа ----------
     if sub_end and sub_end > now_utc:
         # если у пользователя был тест – считаем, что доступ начался ещё с него
@@ -227,7 +232,7 @@ async def cmd_status(message: types.Message):
     if trial_end and trial_end > now_utc:
         trial_start_l = trial_start_eff.astimezone(local_tz)
         trial_end_l   = trial_end.astimezone(local_tz)
-        trial_days    = (trial_end.date() - trial_start_eff.date()).days + 1
+        trial_days = days_inclusive(trial_start_eff.date(), trial_end.date())
         lines.append("\nВ том числе:")
         details_exist = True
         lines.append(
@@ -245,7 +250,7 @@ async def cmd_status(message: types.Message):
             paid_start = sub_start or now_utc          # fallback
 
         paid_start_str = paid_start.astimezone(local_tz).strftime("%d.%m.%Y")
-        paid_days      = (sub_end.date() - paid_start.date()).days + 1
+        paid_days = days_inclusive(paid_start.date(), sub_end.date())
 
 
         if not details_exist:
