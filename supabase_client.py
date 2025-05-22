@@ -1,10 +1,10 @@
-import psycopg2
-import logging
+import psycopg2                                  # драйвер PostgreSQL
+import logging                                   # логирование
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta         # работа с датами
 from config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
 from typing import Optional, Tuple
-log = logging.getLogger(__name__)
+log = logging.getLogger(__name__)                # логгер модуля
 
 
 # -----------------------------------------------------------------
@@ -477,4 +477,5 @@ def mark_payment_paid(payment_id: int, txid: str):
             (txid, payment_id)
         )
         conn.commit()
+
 

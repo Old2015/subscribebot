@@ -1,14 +1,14 @@
-import os
-from dotenv import load_dotenv
-from aiogram import Bot
+import os                                           # доступ к переменным окружения
+from dotenv import load_dotenv                      # загрузка .env файла
+from aiogram import Bot                             # класс Bot
 import aiohttp, ssl
 from aiogram.client.session.aiohttp import AiohttpSession   # ← новый импорт
 from aiogram.client.default import DefaultBotProperties
-from typing import Optional 
-import certifi 
+from typing import Optional
+import certifi                                      # сертификаты Mozilla
 
 
-load_dotenv()
+load_dotenv()  # загружаем переменные окружения из .env
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "TEST")
 ADMIN_CHAT_ID     = int(os.getenv("ADMIN_CHAT_ID",   "0") or 0)
@@ -78,3 +78,4 @@ def make_bot() -> Bot:
         # session=None → aiogram сам создаст AiohttpSession c правильным SSL
     )
     return _bot_singleton
+

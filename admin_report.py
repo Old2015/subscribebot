@@ -1,16 +1,16 @@
 # admin_report.py
 
 
-import logging
-from datetime import datetime, timezone
-from aiogram import Bot
+import logging                                    # логирование
+from datetime import datetime, timezone           # работа со временем
+from aiogram import Bot                           # тип бота
 from tron_service import derive_master, get_usdt_balance, get_total_balance_v2
-import config
-import supabase_client
+import config                                     # настройки проекта
+import supabase_client                            # работа с БД
 
 log = logging.getLogger(__name__)
 
-_SQL = {
+_SQL = {  # набор SQL-запросов для статистики
     "users_total":
         "SELECT COUNT(*) FROM users;",
     "payments_total":
@@ -34,11 +34,13 @@ _SQL = {
 }
 
 def _fetch_one(query):
+    """Выполняет запрос и возвращает одну строку."""
     with supabase_client._get_connection() as conn, conn.cursor() as cur:
         cur.execute(query)
         return cur.fetchone()
 
 async def send_admin_report(bot: Bot):
+    """Формирует текстовый отчёт и отправляет администратору."""
     try:
         metrics = {k: _fetch_one(q) for k, q in _SQL.items()}
     except Exception as e:
@@ -78,7 +80,8 @@ async def send_admin_report(bot: Bot):
     )
 
     try:
-        await bot.send_message(config.ADMIN_CHAT_ID, text, parse_mode="Markdown")
+        await bot.send_message(config.ADMIN_CHAT_ID, text, parse_mode="Markdown")  # отправляем отчёт
         log.info("Admin report sent ✔")
     except Exception as e:
         log.error("Failed to send admin report: %s", e)
+
