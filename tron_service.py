@@ -595,3 +595,4 @@ async def print_master_balance_at_start(bot: Bot) -> None:
             log.warning(f"Cannot notify admin: {e}")
 
 
+

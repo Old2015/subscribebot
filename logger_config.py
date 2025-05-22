@@ -1,9 +1,9 @@
 # logger_config.py
 
-import logging
-import sys
+import logging  # стандартный модуль логирования
+import sys       # вывод в консоль
 
-LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'  # формат логов
 
 def setup_logger():
     logger = logging.getLogger()
@@ -30,3 +30,4 @@ def setup_logger():
     logger.addHandler(ch)
 
     logging.debug("Logger set up: DEBUG to subscribefull.log, INFO+ to subscribe.log & console.")
+

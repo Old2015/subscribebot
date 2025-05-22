@@ -1,12 +1,12 @@
 # join_router.py
-from datetime import datetime, timezone
-from subscription import main_menu   # ← добавьте
+from datetime import datetime, timezone      # время для проверки TTL
+from subscription import main_menu           # клавиатура с меню
 
-from aiogram import Router, Bot, types         # F не нужен → убрал
-import config, supabase_client, logging
+from aiogram import Router, Bot, types         # работа с событиями чата
+import config, supabase_client, logging        # общие модули
 
-log = logging.getLogger(__name__)
-join_router = Router()
+log = logging.getLogger(__name__)        # логгер модуля
+join_router = Router()                   # отдельный роутер для join-request
 
 
 @join_router.chat_join_request()              # фильтр по chat_id делаем руками
@@ -14,6 +14,7 @@ async def handle_join_request(event: types.ChatJoinRequest, bot: Bot):
     """
     Одобряем join-request, если в БД есть действующая ссылка для пользователя.
     """
+    # Срабатывает при запросе пользователя присоединиться к группе
     chat_id = event.chat.id
     user_id = event.from_user.id
     log.info("CJRequest from %s in chat %s", user_id, chat_id)
@@ -55,3 +56,4 @@ async def handle_join_request(event: types.ChatJoinRequest, bot: Bot):
     except Exception as e:
         log.warning("Не смог отправить приветственное сообщение пользователю %s: %s",
                     user_id, e)
+

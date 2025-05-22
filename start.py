@@ -1,10 +1,10 @@
-import time
-from datetime import datetime, timedelta, timezone
-from aiogram import Router, types
-from aiogram.filters import Command
-import logging
-import config
-import supabase_client
+import time                                       # генерация TTL для ссылок
+from datetime import datetime, timedelta, timezone  # работа со временем
+from aiogram import Router, types                 # компоненты aiogram
+from aiogram.filters import Command               # фильтр для /start
+import logging                                    # логирование
+import config                                     # настройки
+import supabase_client                            # БД
 
 # Импортируем main_menu из subscription.py, 
 # где находятся 3 кнопки: "Статус подписки", "Оформить подписку", "Начать заново".
@@ -12,8 +12,8 @@ from subscription import main_menu
 from tron_service import create_join_request_link
 
 
-start_router = Router()
-log = logging.getLogger(__name__)
+start_router = Router()                          # роутер команды /start
+log = logging.getLogger(__name__)               # логгер модуля
 
 @start_router.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -37,12 +37,13 @@ async def cmd_start(message: types.Message):
        - Если подписка active => ...
        - И тоже main_menu
     """
-    telegram_id = message.from_user.id
-    username = message.from_user.username or "NoUsername"
-    now = datetime.now()
+    telegram_id = message.from_user.id          # ID пользователя
+    username = message.from_user.username or "NoUsername"  # ник или заглушка
+    now = datetime.now()                        # текущее время
 
     user = supabase_client.get_user_by_telegram_id(telegram_id)
     # start.py  (в начале cmd_start, до create_join_request_link)
+    # снимаем бан на случай, если пользователь был удалён ранее
     try:
         await config.bot.unban_chat_member(
             chat_id=config.PRIVATE_GROUP_ID,
@@ -218,3 +219,4 @@ async def cmd_start(message: types.Message):
                 "Нажмите «Оформить подписку» для продления.",
                 reply_markup=main_menu
             )
+

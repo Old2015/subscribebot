@@ -1,21 +1,21 @@
-import time
-from datetime import datetime, timedelta, timezone, date
-import logging
+import time                                          # временные операции
+from datetime import datetime, timedelta, timezone, date  # работа с датами
+import logging                                       # логирование
 import os
 
-from aiogram import Router, types
-import config
-import supabase_client
+from aiogram import Router, types                    # объекты aiogram
+import config                                        # конфиг
+import supabase_client                               # работа с БД
 from tron_service import create_qr_code, generate_ephemeral_address
 from tron_service import create_join_request_link
 
 
 
-subscription_router = Router()
-log = logging.getLogger(__name__)
+subscription_router = Router()                   # роутер раздела подписки
+log = logging.getLogger(__name__)                # логгер модуля
 
 # Anti-spam: не чаще одного раза в 30 сек
-RESTART_COOLDOWN = 30                        # сек
+RESTART_COOLDOWN = 30                        # секунды между попытками "Начать заново"
 _last_restart: dict[int, float] = {}         # tg_id → timestamp
 
 
@@ -41,6 +41,7 @@ async def cmd_restart(message: types.Message):
     2) Проверяем, есть ли trial_end > now или subscription_end > now
     3) Если есть — генерируем одноразовую ссылку (24 ч, member_limit=1)
     """
+    # обработка нажатия кнопки "Начать заново"
     telegram_id = message.from_user.id          # ← добавили
     log.info("User %s pressed 'Начать заново'", telegram_id)
 
@@ -379,3 +380,4 @@ async def cmd_subscribe(message: types.Message):
         await message.answer(msg_address, parse_mode="Markdown")
         await message.answer("(Не удалось сгенерировать QR)\n" + msg_after)
         await message.answer(msg_network, parse_mode="Markdown")
+
