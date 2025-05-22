@@ -50,7 +50,7 @@ async def handle_join_request(event: types.ChatJoinRequest, bot: Bot):
     try:
         await bot.send_message(
             chat_id=user_id,
-            text="✅ Заявка одобрена! Добро пожаловать в TradingGroup.",
+            text="✅ Your request has been approved! Welcome to AnonTradingGroup.",
             reply_markup=main_menu              # ← показываем меню
         )
     except Exception as e:

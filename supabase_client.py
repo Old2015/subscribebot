@@ -384,16 +384,16 @@ def get_user_sub_info(user_id: int) -> str:
             """, (user_id,))
             row = cur.fetchone()
             if not row:
-                return "Подписка не найдена."
+                return "Subscription not found."
             sstart, send = row
             if not send:
-                return "Подписка не оформлена."
+                return "No subscription has been purchased."
 
             if send > now:
                 dleft = (send - now).days
-                return f"Ваша подписка действует до {send.strftime('%d.%m.%Y')} (~{dleft} дн)."
+                return f"Your subscription is active until  {send.strftime('%d.%m.%Y')} (~{dleft} days)."
             else:
-                return "Подписка истекла."
+                return "ПThe subscription period has ended."
 
 # внизу файла (после apply_subscription_extension)
 

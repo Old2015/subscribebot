@@ -361,12 +361,11 @@ async def poll_trc20_transactions(bot: Bot) -> None:
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"⛔️ Одноразовый адрес\n`{dep_addr}`\nбольше не активен "
-                        "(24-часовой срок истёк). Платежи на него не учитываются.\n\n"
-                        "Чтобы оформить или продлить подписку, нажмите "
-                        "«Оформить подписку» и получите новый адрес.",
+                        f"⛔️ The one-time address\n`{dep_addr}`\nis no longer active (the 24-hour period has expired). Payments sent to it will not be credited.\n\n"
+                        "To purchase or extend your subscription, tap «Purchase subscription» to receive a new address.",
                         parse_mode='Markdown'
                     )
+
                 except Exception as e:
                     log.warning("cannot notify user %s about expired addr: %s", tg_id, e)            
             continue
@@ -414,19 +413,19 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             end_str   = new_end.astimezone(local_tz).strftime("%d.%m.%Y")
 
             lines = [
-                f"Перевод в сумме {usdt:.2f} USDT получен.",
-                f"Ваша подписка оформлена на {days_paid} дней.",
-                "Доступ к TradingGroup разрешён",
-                f"с {today_str} по {end_str}.",
+                f"Transfer of {usdt:.2f} USDT received.",
+                f"Your subscription has been activated for {days_paid} days.",
+                "Access to AnonTradingGroup is granted",
+                f"from {today_str} to {end_str}.",
             ]
             if trial_end and trial_end > now_utc:
                 trial_end_str = trial_end.astimezone(local_tz).strftime("%d.%m.%Y")
                 trial_days = (trial_end.date() - now_utc.date()).days
                 paid_start_str = base_start.astimezone(local_tz).strftime("%d.%m.%Y")
                 lines.append(
-                    f"\nВ том числе:"
-                    f"\n• с {today_str} по {trial_end_str} — {trial_days} дн. тестового периода."
-                    f"\n• с {paid_start_str} по {end_str} — {days_paid} дн. оплаченной подписки."
+                    f"\nIncluding"
+                    f"\n• from {today_str} to {trial_end_str} — {trial_days}-day trial period."
+                    f"\n• from {paid_start_str} to {end_str} — {days_paid}-day paid subscription."
                 )
             await bot.send_message(tg_id, "\n".join(lines), parse_mode="Markdown")
 
@@ -472,9 +471,8 @@ async def poll_trc20_transactions(bot: Bot) -> None:
         try:
             await bot.send_message(
                 tg_id,
-                f"✅ Платёж учтён, адрес `{dep_addr}` деактивирован.\n"
-                "Если понадобится продлить подписку в будущем — "
-                "получите свежий адрес через «Оформить подписку».",
+                f"✅ Payment received; the address `{dep_addr}` has been deactivated.\n"
+                "If you need to extend your subscription in the future, request a new address via «Purchase subscription».",
                 parse_mode="Markdown"
             )
         except Exception as e:
@@ -533,16 +531,15 @@ async def poll_trc20_transactions(bot: Bot) -> None:
                 supabase_client.upsert_invite(user_id, join_link, expires_at)
 
     # 4) отправляем кнопку
-            btn = types.InlineKeyboardButton(text="Войти в группу", url=join_link)
+            btn = types.InlineKeyboardButton(text="Join the group", url=join_link)
             kb  = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
-            
+                      
             await bot.send_message(
-               tg_id,
-                "🎉 *Подписка активна!* Нажмите кнопку ниже и подтвердите запрос — "
-               "бот одобрит его автоматически.",
+                tg_id,
+                "🎉 *Subscription is active!* Tap the button below and confirm your request—the bot will approve it automatically.",
                 parse_mode="Markdown",
                 reply_markup=kb
-            )
+            )            
 
         except Exception as e:
             log.error("Cannot create/send join-request link for %s: %s", tg_id, e)

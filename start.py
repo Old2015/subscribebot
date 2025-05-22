@@ -100,7 +100,7 @@ async def cmd_start(message: types.Message):
         if not new_user:
             log.error("DB insert for new user %s failed", telegram_id)
             await message.answer(
-                "Ошибка базы данных. Попробуйте позже или напишите администратору @gwen12309",
+                "Database error. Please try again later or contact the administrator @gwen12309",
                 reply_markup=main_menu
             )
             return
@@ -138,26 +138,26 @@ async def cmd_start(message: types.Message):
             supabase_client.upsert_invite(new_user_id, join_link, expires_at)
 
             # --- формируем инлайн-кнопку ---
-            btn = types.InlineKeyboardButton(text="Войти в группу", url=join_link)
+            btn = types.InlineKeyboardButton(text="Join AnonTradingGroup", url=join_link)
             join_kb = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
 
             link_comment = (
-                "Нажмите кнопку ниже и отправьте запрос — бот одобрит автоматически "
-                "(ссылка действует 24 ч, один вход).\n\n"
-                "Если понадобится новая ссылка, нажмите «Начать заново».\n"
-                "Возникли проблемы — пишите @gwen12309."
+                "Tap the button below and send your request—the bot will approve it automatically "
+                "(the link is valid for 24 hours and permits a single entry).\n\n"
+                "If you need a new link, tap «Start over».\n"
+                "For any issues, please contact @gwen12309."
             )
         except Exception as e:
             log.error("Failed to create join-request for new user %s: %s", telegram_id, e)
             link_comment = (
-                "Не удалось автоматически создать ссылку. "
-                "Свяжитесь с админом @gwen12309 или попробуйте «Начать заново» позже."
+                "Unable to generate the link automatically. "
+                "Please contact the administrator @gwen12309 or try «Start over» later."
             )
 
 
         text = (
-            f"Добро пожаловать! Вы получили доступ в TradingGroup и Вам оформлен тестовый доступ на {days_left} дн., "
-            f"до {trial_end_str}.\n Внимательно изучите документацию в закрепе группы.\n\n"
+            f"Welcome! You now have access to AnonTradingGroup and a trial period of {days_left} days, "
+            f"valid until {trial_end_str}.\n Please review the documentation pinned in the group carefull!.\n\n"
             f"{link_comment}"
         )
 
@@ -187,8 +187,8 @@ async def cmd_start(message: types.Message):
             dleft = (trial_end - now).days
             trial_end_str = trial_end.strftime("%d.%m.%Y")
             await message.answer(
-                f"У вас есть бесплатный доступ до {trial_end_str} ({dleft} дн).\n\n"
-                "Чтобы сформировать новую ссылку, нажмите «Начать заново».",
+                f"You have free access until {trial_end_str} ({dleft} days).\n\n"
+                "To generate a new link, tap «Start over».",
                 reply_markup=main_menu
             )
         elif sub_end and sub_end > now:
@@ -196,27 +196,27 @@ async def cmd_start(message: types.Message):
             if sub_start and sub_start > now:
                 dwait = (sub_start - now).days
                 await message.answer(
-                    f"Подписка начнётся через {dwait} дн., "
-                    f"с {sub_start.strftime('%d.%m.%Y')}.\n\n"
-                    "Для новой ссылки: «Начать заново».",
+                    f"Your subscription will start in {dwait} days, "
+                    f"on {sub_start.strftime('%d.%m.%Y')}.\n\n"
+                    "To generate a new link, tap «Start over»",
                     reply_markup=main_menu
                 )
             elif sub_start is None or sub_start <= now < sub_end:
                 dleft = (sub_end - now).days
                 await message.answer(
-                    f"Подписка активна до {sub_end.strftime('%d.%m.%Y')} ({dleft} дн.).\n\n"
-                    "Чтобы получить новую ссылку, «Начать заново».",
+                    f"Your subscription is active until {sub_end.strftime('%d.%m.%Y')} ({dleft} days).\n\n"
+                    "To generate a new link, tap «Start over».",
                     reply_markup=main_menu
                 )
             else:
                 await message.answer(
-                    "Странное состояние подписки. Попробуйте «Начать заново» или свяжитесь с админом @gwen12309",
+                    "Unexpected subscription state. Try «Start over» or contact the administrator @gwen12309",
                     reply_markup=main_menu
                 )
         else:
             await message.answer(
-                "Ваш тестовый период и/или подписка истекли. "
-                "Нажмите «Оформить подписку» для продления.",
+                "Your trial period and/or subscription have expired "
+                "Tap «Purchase subscription» to renew",
                 reply_markup=main_menu
             )
 

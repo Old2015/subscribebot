@@ -45,7 +45,7 @@ async def run_daily_tasks(bot: Bot):
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"Тестовый доступ заканчивается через {days_left} дн. "
+                        f"Your trial access will expire in {days_left} days. "
                         f"({trial_end.strftime('%d.%m.%Y')}).",
                     )
                     stats["trial_warn"] += 1
@@ -59,7 +59,7 @@ async def run_daily_tasks(bot: Bot):
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"Подписка заканчивается через {days_left} дн. "
+                        f"Your subscription will expire in {days_left} days. "
                         f"({sub_end.strftime('%d.%m.%Y')}).",
                     )
                     stats["sub_warn"] += 1
@@ -74,8 +74,8 @@ async def run_daily_tasks(bot: Bot):
             try:
                 await bot.send_message(
                     tg_id,
-                    "Ваш доступ к TradingGroup завершён. "
-                    "Чтобы восстановить доступ, оформите подписку.",
+                    "Your access to AnonTradingGroup has ended. "
+                    "To regain access, please purchase a subscription.",
                     disable_notification=True,
                 )
             except Exception as e:

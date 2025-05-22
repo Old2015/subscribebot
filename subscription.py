@@ -23,17 +23,17 @@ _last_restart: dict[int, float] = {}         # tg_id → timestamp
 main_menu = types.ReplyKeyboardMarkup(
     keyboard=[
         [
-            types.KeyboardButton(text="Статус подписки"),
-            types.KeyboardButton(text="Оформить подписку"),
+            types.KeyboardButton(text="Subscription status"),
+            types.KeyboardButton(text="Purchase subscription"),
         ],
         [
-            types.KeyboardButton(text="Начать заново")
+            types.KeyboardButton(text="Start over")
         ]
     ],
     resize_keyboard=True
 )
 
-@subscription_router.message(lambda msg: msg.text == "Начать заново")
+@subscription_router.message(lambda msg: msg.text == "Start over")
 async def cmd_restart(message: types.Message):
     """
     Пользователь нажал «Начать заново».
@@ -43,13 +43,13 @@ async def cmd_restart(message: types.Message):
     """
     # обработка нажатия кнопки "Начать заново"
     telegram_id = message.from_user.id          # ← добавили
-    log.info("User %s pressed 'Начать заново'", telegram_id)
+    log.info("User %s pressed 'Start over'", telegram_id)
 
     now_ts = time.time()
     if now_ts - _last_restart.get(telegram_id, 0) < RESTART_COOLDOWN:
         await message.answer(
-            "Ожидание 30 секунд. "
-            "Пожалуйста, подождите немного 🙂",
+            "Waiting 30 seconds. "
+            "Please wait a moment 🙂",
             reply_markup=main_menu
         )
         return
@@ -71,7 +71,7 @@ async def cmd_restart(message: types.Message):
     user = supabase_client.get_user_by_telegram_id(telegram_id)
     if not user:
         await message.answer(
-            "Вы не зарегистрированы. Нажмите /start ",
+            "You are not registered. Tap /start ",
             reply_markup=main_menu
         )
         return
@@ -97,7 +97,7 @@ async def cmd_restart(message: types.Message):
 
     if not has_access:
         await message.answer(
-            "У вас сейчас нет доступа (Период бесплатного доступа истёк или подписка не оформлена). Технические вопросы - админ @gwen12309",
+            "You currently have no access (your free trial has expired or no subscription is active). You can purchase a new subscription. For technical questions, please contact the administrator @gwen12309",
             reply_markup=main_menu
         )
         return
@@ -137,10 +137,10 @@ async def cmd_restart(message: types.Message):
 
 
         # 4) отдаём кнопку
-        btn = types.InlineKeyboardButton(text="Войти в группу", url=join_link)
+        btn = types.InlineKeyboardButton(text="Join the group", url=join_link)
         kb  = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
         await message.answer(
-            "Нажмите кнопку ниже и подтвердите заявку — бот одобрит её автоматически.",
+            "Tap the button below and confirm your request—the bot will approve it automatically.",
             reply_markup=kb
         )
 
@@ -148,14 +148,14 @@ async def cmd_restart(message: types.Message):
     except Exception as e:
         log.error("restart join-link error for %s: %s", telegram_id, e)
         await message.answer(
-            "🚫 Не удалось выдать ссылку. Попробуйте позже или напишите администратору @gwen12309.",
+            "🚫 Unable to generate a link. Please try again later or contact the administrator @gwen12309.",
             reply_markup=main_menu
         )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # «СТАТУС ПОДПИСКИ»
 # ─────────────────────────────────────────────────────────────────────────────
-@subscription_router.message(lambda msg: msg.text == "Статус подписки")
+@subscription_router.message(lambda msg: msg.text == "Subscription status")
 async def cmd_status(message: types.Message):
     """
     Показываем текущее состояние доступа. Логика:
@@ -163,12 +163,12 @@ async def cmd_status(message: types.Message):
       • Бесплатные дни = trial_start … trial_end            (если есть и не закончились)
       • Платные дни     = max(sub_start, trial_end+1) … sub_end
     """
-    log.info("User %s pressed 'Статус подписки'", message.from_user.id)
+    log.info("User %s pressed 'Subscription status'", message.from_user.id)
 
     user = supabase_client.get_user_by_telegram_id(message.from_user.id)
     if not user:
         await message.answer(
-            "Вы не зарегистрированы. Нажмите «Начать заново».",
+            "You are not registered. Tap «Start over» .",
             reply_markup=main_menu,
         )
         return
@@ -208,9 +208,9 @@ async def cmd_status(message: types.Message):
         access_end   = trial_end
     else:
         await message.answer(
-            "У вас нет активного доступа.\n"
-            "Для доступа в группу нажмите → «Оформить подписку». "
-            "Технические вопросы — @gwen12309",
+            "You currently have no active access.\n"
+            "To join the group, tap → «Purchase subscription»."
+            "For technical questions, please contact @gwen12309",
             reply_markup=main_menu,
         )
         return
@@ -219,8 +219,8 @@ async def cmd_status(message: types.Message):
     access_end_str   = access_end.astimezone(local_tz).strftime("%d.%m.%Y")
 
     lines = [
-        "ℹ️ *Статус доступа к TradingGroup*",
-        f"Доступ разрешён с {access_start_str} по {access_end_str}."
+        "ℹ️ *AnonTradingGroup access status*",
+        f"Access is granted from  {access_start_str} to {access_end_str}."
     ]
 
     details_exist = False            # нужно ли выводить раздел “В том числе:”
@@ -234,10 +234,10 @@ async def cmd_status(message: types.Message):
         trial_start_l = trial_start_eff.astimezone(local_tz)
         trial_end_l   = trial_end.astimezone(local_tz)
         trial_days = days_inclusive(trial_start_eff.date(), trial_end.date())
-        lines.append("\nВ том числе:")
+        lines.append("\nIncluding:")
         details_exist = True
         lines.append(
-          f"• c {trial_start_l:%d.%m.%Y} по {trial_end_l:%d.%m.%Y} — {trial_days} дн. бесплатного теста"
+          f"• from {trial_start_l:%d.%m.%Y} to {trial_end_l:%d.%m.%Y} — {trial_days}-day free trial"
         )
 
     # -------------------------------------------------------------------------
@@ -255,9 +255,9 @@ async def cmd_status(message: types.Message):
 
 
         if not details_exist:
-            lines.append("\nВ том числе:")
+            lines.append("\nIncluding:")
         lines.append(
-            f"• c {paid_start_str} по {access_end_str} — {paid_days} дн. оплаченной подписки"
+            f"• from {paid_start_str} to {access_end_str} — {paid_days} day paid subscription"
         )
 # ------------------------------ конец изменённого фрагмента ------------------
     await message.answer(
@@ -268,7 +268,7 @@ async def cmd_status(message: types.Message):
 
 
 
-@subscription_router.message(lambda msg: msg.text == "Оформить подписку")
+@subscription_router.message(lambda msg: msg.text == "Purchase subscription")
 async def cmd_subscribe(message: types.Message):
     """
     1) Проверяем, выдавали ли адрес <24 ч назад
@@ -280,12 +280,12 @@ async def cmd_subscribe(message: types.Message):
        (4) "Внимание: только сеть TRC20!"
     """
     telegram_id = message.from_user.id
-    log.info(f"User {telegram_id} pressed 'Оформить подписку'")
+    log.info(f"User {telegram_id} pressed 'Purchase subscription'")
 
     user = supabase_client.get_user_by_telegram_id(message.from_user.id)
     if not user:
         await message.answer(
-            "Вы не зарегистрированы. Введите /start для регистрации.",
+            "You are not registered. Tap /start .",
             reply_markup=main_menu
         )
         return
@@ -309,13 +309,12 @@ async def cmd_subscribe(message: types.Message):
             hours_left    = int(remaining_sec // 3600)   # или math.ceil(… / 3600)
 
             await message.answer(
-                "Адрес для оплаты был выдан менее 24ч назад.\n"
-                f"Осталось примерно {hours_left}ч, прежде чем вы сможете запросить новый.\n"
-                f"Ваш текущий адрес для оплаты:\n{deposit_address}",
+                "A payment address was issued less than 24 hours ago.\n"
+                f"Approximately {hours_left}h remain before you can request a new one.\n"
+                f"Your current payment address:\n{deposit_address}",
                 reply_markup=main_menu,
             )
             return
-
     # 24 ч прошли — адрес обнуляем
         supabase_client.reset_deposit_address_and_privkey(user["id"])
 
@@ -327,7 +326,7 @@ async def cmd_subscribe(message: types.Message):
     address = tron_data["address"]
     if not address:
         await message.answer(
-            "Ошибка: не удалось сгенерировать Tron-адрес. Свяжитесь с админом @gwen12309",
+            "Error: failed to generate a Tron address. Please contact the administrator @gwen12309",
             reply_markup=main_menu
         )
         return
@@ -340,15 +339,15 @@ async def cmd_subscribe(message: types.Message):
 
     # Подготавливаем 4 части сообщения
     msg_intro = (
-        f"Для оформления подписки на 30 дней оплатите {usdt_amount} USDT (TRC20) на адрес:"
+        f"To purchase a 30-day subscription, please send {usdt_amount} USDT (TRC20) to the address below:"
     )
-    msg_address = f"`{address}`"  # удобно копировать
+    msg_address = f"`{address}`"  # easy to copy
     msg_after = (
-        "Этот адрес действует 24 часа. После оплаты бот в течении 20 минут автоматически подтвердит вашу подписку и активирует (продлит) доступ в группу."
+        "This address is valid for 24 hours. After payment, the bot will automatically confirm your subscription and activate (or extend) your group access within 20 minutes."
     )
     msg_network = (
-        "Внимание: оплата принимается **только** в сети TRC20.\n"
-        "Если отправите в другой сети, средства не будут зачислены! Технические вопросы - админ @gwen12309"
+        "Attention: payments are accepted **only** on the TRC20 network.\n"
+        "If you send funds via another network, they will not be credited! For technical questions, contact the administrator @gwen12309."
     )
 
     if qr_path and os.path.exists(qr_path):
@@ -378,6 +377,6 @@ async def cmd_subscribe(message: types.Message):
         # Без QR
         await message.answer(msg_intro, reply_markup=main_menu)
         await message.answer(msg_address, parse_mode="Markdown")
-        await message.answer("(Не удалось сгенерировать QR)\n" + msg_after)
+        await message.answer("(Failed to generate a QR code)\n" + msg_after)
         await message.answer(msg_network, parse_mode="Markdown")
 
