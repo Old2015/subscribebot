@@ -138,7 +138,7 @@ async def cmd_start(message: types.Message):
             supabase_client.upsert_invite(new_user_id, join_link, expires_at)
 
             # --- формируем инлайн-кнопку ---
-            btn = types.InlineKeyboardButton(text="Join AnonTradingGroup", url=join_link)
+            btn = types.InlineKeyboardButton(text="Join HiddenEdge Traders", url=join_link)
             join_kb = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
 
             link_comment = (
@@ -156,7 +156,7 @@ async def cmd_start(message: types.Message):
 
 
         text = (
-            f"Welcome! You now have access to AnonTradingGroup and a trial period of {days_left} days, "
+            f"Welcome! You now have access to HiddenEdge Traders and a trial period of {days_left} days, "
             f"valid until {trial_end_str}.\n Please review the documentation pinned in the group carefull!.\n\n"
             f"{link_comment}"
         )
