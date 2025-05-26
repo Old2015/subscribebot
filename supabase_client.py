@@ -360,6 +360,9 @@ def apply_subscription_extension(user_id: int, days_to_add: int):
 
             new_sub_start = start_point if sub_start is None or sub_start < start_point else sub_start
             new_sub_end = start_point + timedelta(days=days_to_add)
+            # Подписка действует включительно по дату new_sub_end,
+            # поэтому сохраняем время 23:59:59 того же дня
+            new_sub_end = new_sub_end.replace(hour=23, minute=59, second=59, microsecond=0)
 
             cur.execute("""
                 UPDATE users

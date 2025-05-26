@@ -57,3 +57,14 @@ async def handle_join_request(event: types.ChatJoinRequest, bot: Bot):
         log.warning("Не смог отправить приветственное сообщение пользователю %s: %s",
                     user_id, e)
 
+    # Уведомляем администратора о новом участнике
+    if config.ADMIN_CHAT_ID:
+        username = f"@{event.from_user.username}" if event.from_user.username else "(no username)"
+        try:
+            await bot.send_message(
+                chat_id=config.ADMIN_CHAT_ID,
+                text=f"👤 New member joined: {user_id} {username}"
+            )
+        except Exception as e:
+            log.warning("Failed to notify admin about join of %s: %s", user_id, e)
+
