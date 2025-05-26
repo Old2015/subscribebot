@@ -219,7 +219,7 @@ async def cmd_status(message: types.Message):
     access_end_str   = access_end.astimezone(local_tz).strftime("%d.%m.%Y")
 
     lines = [
-        "ℹ️ *AnonTradingGroup access status*",
+        "ℹ️ *HiddenEdge Trader’s Group access status*",
         f"Access is granted from  {access_start_str} to {access_end_str}."
     ]
 

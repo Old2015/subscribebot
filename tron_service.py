@@ -415,7 +415,7 @@ async def poll_trc20_transactions(bot: Bot) -> None:
             lines = [
                 f"Transfer of {usdt:.2f} USDT received.",
                 f"Your subscription has been activated for {days_paid} days.",
-                "Access to AnonTradingGroup is granted",
+                "Access to HiddenEdge Trader’s Group is granted",
                 f"from {today_str} to {end_str}.",
             ]
             if trial_end and trial_end > now_utc:

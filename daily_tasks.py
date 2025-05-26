@@ -74,7 +74,7 @@ async def run_daily_tasks(bot: Bot):
             try:
                 await bot.send_message(
                     tg_id,
-                    "Your access to AnonTradingGroup has ended. "
+                    "Your access to HiddenEdge Trader’s Group has ended. "
                     "To regain access, please purchase a subscription.",
                     disable_notification=True,
                 )
