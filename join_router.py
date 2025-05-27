@@ -50,7 +50,7 @@ async def handle_join_request(event: types.ChatJoinRequest, bot: Bot):
     try:
         await bot.send_message(
             chat_id=user_id,
-            text="✅ Your request has been approved! Welcome to HiddenEdge Traders.",
+            text="✅ Your join request has been approved. Welcome to HiddenEdge Traders!",
             reply_markup=main_menu              # ← показываем меню
         )
     except Exception as e:

@@ -142,8 +142,8 @@ async def cmd_start(message: types.Message):
             join_kb = types.InlineKeyboardMarkup(inline_keyboard=[[btn]])
 
             link_comment = (
-                "Tap the button below and send your request—the bot will approve it automatically "
-                "(the link is valid for 24 hours and permits a single entry).\n\n"
+                "Tap the button below to send your request—the bot will approve it automatically "
+                "(the link is valid for 24 hours and allows a single entry).\n\n"
                 "If you need a new link, tap «Start over».\n"
                 "For any issues, please contact @gwen12309."
             )
@@ -157,7 +157,7 @@ async def cmd_start(message: types.Message):
 
         text = (
             f"Welcome! You now have access to HiddenEdge Traders and a trial period of {days_left} days, "
-            f"valid until {trial_end_str}.\n Please review the documentation pinned in the group carefull!.\n\n"
+            f"valid until {trial_end_str}.\n Please review the documentation pinned in the group carefully.\n\n"
             f"{link_comment}"
         )
 

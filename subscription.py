@@ -48,8 +48,7 @@ async def cmd_restart(message: types.Message):
     now_ts = time.time()
     if now_ts - _last_restart.get(telegram_id, 0) < RESTART_COOLDOWN:
         await message.answer(
-            "Waiting 30 seconds. "
-            "Please wait a moment 🙂",
+            "Please wait 30 seconds before trying again.",
             reply_markup=main_menu
         )
         return
