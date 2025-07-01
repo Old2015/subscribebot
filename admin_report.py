@@ -31,6 +31,9 @@ _SQL = {  # набор SQL-запросов для статистики
         "SELECT COUNT(*) FROM users WHERE trial_end > NOW();",
     "sub_active":
         "SELECT COUNT(*) FROM users WHERE subscription_end > NOW();",
+    "users_active":
+        "SELECT COUNT(*) FROM users "
+        "WHERE trial_end > NOW() OR subscription_end > NOW();",
 }
 
 def _fetch_one(query):
@@ -55,6 +58,7 @@ async def send_admin_report(bot: Bot):
     pays_day, usdt_day = metrics["payments_day"]
     trial_cnt = metrics["trial_active"][0]
     sub_cnt   = metrics["sub_active"][0]
+    active_cnt = metrics["users_active"][0]
 
     today = datetime.now(timezone.utc).astimezone().strftime("%d.%m.%Y")
 
@@ -75,8 +79,9 @@ async def send_admin_report(bot: Bot):
         f"• Платежей за текущий месяц: **{pays_mon}** на сумму **{usdt_mon:.2f} USDT**\n\n"
         f"• Новых пользователей за сутки: **{users_day}**\n"
         f"• Платежей за сутки: **{pays_day}** на сумму **{usdt_day:.2f} USDT**\n\n"
-        f"• Активных тестовых доступов: **{trial_cnt}**\n"
-        f"• Активных подписок: **{sub_cnt}**"
+        f"• Всего активных пользователей в базе: **{active_cnt}**\n"
+        f"• •  в том числе по тестовым доступам: **{trial_cnt}**\n"
+        f"• •  в том числе по подпискам: **{sub_cnt}**"
     )
 
     try:
