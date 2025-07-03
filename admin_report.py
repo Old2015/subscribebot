@@ -32,7 +32,7 @@ _SQL = {  # набор SQL-запросов для статистики
     "sub_active":
         "SELECT COUNT(*) FROM users WHERE subscription_end > NOW();",
     "users_active":
-        "SELECT COUNT(*) FROM users "
+        "SELECT COUNT(DISTINCT telegram_id) FROM users "
         "WHERE trial_end > NOW() OR subscription_end > NOW();",
 }
 
@@ -80,8 +80,8 @@ async def send_admin_report(bot: Bot):
         f"• Новых пользователей за сутки: **{users_day}**\n"
         f"• Платежей за сутки: **{pays_day}** на сумму **{usdt_day:.2f} USDT**\n\n"
         f"• Всего активных пользователей в базе: **{active_cnt}**\n"
-        f"• •  в том числе по тестовым доступам: **{trial_cnt}**\n"
-        f"• •  в том числе по подпискам: **{sub_cnt}**"
+        f"• •  в т.ч. по тестам: **{trial_cnt}**\n"
+        f"• •  в т.ч. по подпискам: **{sub_cnt}**"
     )
 
     try:
