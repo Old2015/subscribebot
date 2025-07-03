@@ -32,7 +32,7 @@ _SQL = {  # набор SQL-запросов для статистики
     "sub_active":
         "SELECT COUNT(*) FROM users WHERE subscription_end > NOW();",
     "users_active":
-        "SELECT COUNT(*) FROM users "
+        "SELECT COUNT(DISTINCT telegram_id) FROM users "
         "WHERE trial_end > NOW() OR subscription_end > NOW();",
 }
 
