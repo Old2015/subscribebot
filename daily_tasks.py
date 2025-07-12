@@ -23,6 +23,7 @@ async def run_daily_tasks(bot: Bot):
     # Основная ежедневная процедура
     log.info("Running daily tasks…")
     stats = {"trial_warn": 0, "sub_warn": 0, "kicked": 0}
+    kicked_users: list[tuple[int, str | None]] = []
 
     users = supabase_client.get_all_users()          # SELECT * FROM users
     now   = datetime.now(timezone.utc)
@@ -91,6 +92,7 @@ async def run_daily_tasks(bot: Bot):
                     revoke_messages=True,
                 )
                 stats["kicked"] += 1
+                kicked_users.append((tg_id, user.get("username")))
             except Exception as e:
                 log.error("Kick failed for %s: %s", tg_id, e)
 
@@ -100,4 +102,6 @@ async def run_daily_tasks(bot: Bot):
         "Daily tasks finished: trial_warn=%d, sub_warn=%d, kicked=%d",
         stats["trial_warn"], stats["sub_warn"], stats["kicked"],
     )  # выводим статистику в лог
+
+    return stats, kicked_users
 
