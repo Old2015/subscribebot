@@ -52,8 +52,8 @@ async def scheduled_daily_job(bot):
     # Тут выполняются периодические напоминания и отправляется статистика
     from daily_tasks import run_daily_tasks
     from admin_report import send_admin_report
-    await run_daily_tasks(bot)
-    await send_admin_report(bot)
+    stats, kicked = await run_daily_tasks(bot)
+    await send_admin_report(bot, kicked)
 
 
 # ---------------------------------------------------------------------------

@@ -437,6 +437,20 @@ def get_all_users():
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in rows]
+
+
+def get_new_users_last_day() -> list[tuple[int, str | None]]:
+    """Returns (telegram_id, username) for users created in the last 24h."""
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT telegram_id, username
+              FROM users
+             WHERE created_at >= NOW() - interval '1 day'
+             ORDER BY created_at
+            """
+        )
+        return cur.fetchall()
     
 
 def get_pending_payment(user_id: int, deposit_addr: str) -> Optional[int]:
