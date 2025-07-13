@@ -5,6 +5,7 @@ import logging                                    # логирование
 from datetime import datetime, timezone           # работа со временем
 from aiogram import Bot                           # тип бота
 from tron_service import derive_master, get_usdt_balance, get_total_balance_v2
+from utils import escape_md
 import config                                     # настройки проекта
 import supabase_client                            # работа с БД
 
@@ -42,8 +43,10 @@ def _fetch_one(query):
         cur.execute(query)
         return cur.fetchone()
 
-async def send_admin_report(bot: Bot):
+async def send_admin_report(bot: Bot, kicked_users: list[tuple[int, str | None]] | None = None):
     """Формирует текстовый отчёт и отправляет администратору."""
+    if kicked_users is None:
+        kicked_users = []
     try:
         metrics = {k: _fetch_one(q) for k, q in _SQL.items()}
     except Exception as e:
@@ -60,6 +63,8 @@ async def send_admin_report(bot: Bot):
     sub_cnt   = metrics["sub_active"][0]
     active_cnt = metrics["users_active"][0]
 
+    new_users = supabase_client.get_new_users_last_day()
+
     today = datetime.now(timezone.utc).astimezone().strftime("%d.%m.%Y")
 
     
@@ -70,15 +75,27 @@ async def send_admin_report(bot: Bot):
     trx_master     = total_sun / 1_000_000                 # Sun → TRX
 
 
+    new_users_lines = "".join(
+        f"• • {uid} - {escape_md(uname or 'NoUsername')}\n" 
+        for uid, uname in new_users
+    )
+    kicked_lines = "".join(
+        f"• • {uid} - {escape_md(uname or 'NoUsername')}\n" 
+        for uid, uname in kicked_users
+    )
+
     text = (
         f"*Ежедневный отчёт — {today}*\n\n"
         f"• Баланс мастер‑кошелька: {usdt_master:.2f} USDT | {trx_master:.2f} TRX\n\n"
         f"• Всего пользователей в базе: **{users_tot}**\n"
         f"• Всего платежей в базе: **{pays_tot}** на сумму **{usdt_tot:.2f} USDT**\n\n"
         f"• Новых пользователей за текущий месяц: **{users_mon}**\n"
-        f"• Платежей за текущий месяц: **{pays_mon}** на сумму **{usdt_mon:.2f} USDT**\n\n"
-        f"• Новых пользователей за сутки: **{users_day}**\n"
+        f"• Платежей за текущий месяц: **{pays_mon}** на сумму **{usdt_mon:.2f} USDT**\n"
         f"• Платежей за сутки: **{pays_day}** на сумму **{usdt_day:.2f} USDT**\n\n"
+        f"• Новых пользователей за сутки: **{users_day}**\n"
+        f"{new_users_lines if new_users_lines else ''}"
+        f"• Удалено пользователей за сутки: **{len(kicked_users)}**\n"
+        f"{kicked_lines if kicked_lines else ''}\n"
         f"• Всего активных пользователей в базе: **{active_cnt}**\n"
         f"• •  в т.ч. по тестам: **{trial_cnt}**\n"
         f"• •  в т.ч. по подпискам: **{sub_cnt}**"
