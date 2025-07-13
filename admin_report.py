@@ -5,6 +5,7 @@ import logging                                    # логирование
 from datetime import datetime, timezone           # работа со временем
 from aiogram import Bot                           # тип бота
 from tron_service import derive_master, get_usdt_balance, get_total_balance_v2
+from utils import escape_md
 import config                                     # настройки проекта
 import supabase_client                            # работа с БД
 
@@ -75,10 +76,12 @@ async def send_admin_report(bot: Bot, kicked_users: list[tuple[int, str | None]]
 
 
     new_users_lines = "".join(
-        f"• • {uid} - {uname or 'NoUsername'}\n" for uid, uname in new_users
+        f"• • {uid} - {escape_md(uname or 'NoUsername')}\n" 
+        for uid, uname in new_users
     )
     kicked_lines = "".join(
-        f"• • {uid} - {uname or 'NoUsername'}\n" for uid, uname in kicked_users
+        f"• • {uid} - {escape_md(uname or 'NoUsername')}\n" 
+        for uid, uname in kicked_users
     )
 
     text = (
