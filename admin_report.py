@@ -24,7 +24,8 @@ _SQL = {  # набор SQL-запросов для статистики
         "WHERE paid_at >= date_trunc('month', NOW());",
     "users_day":
         "SELECT COUNT(*) FROM users "
-        "WHERE created_at >= NOW() - interval '1 day';",
+        "WHERE created_at >= date_trunc('day', NOW()) - interval '1 day' "
+        "AND created_at <  date_trunc('day', NOW());",
     "payments_day":
         "SELECT COUNT(*), COALESCE(SUM(amount_usdt),0) FROM payments "
         "WHERE paid_at >= NOW() - interval '1 day';",
@@ -43,10 +44,9 @@ def _fetch_one(query):
         cur.execute(query)
         return cur.fetchone()
 
-async def send_admin_report(bot: Bot, kicked_users: list[tuple[int, str | None]] | None = None):
+async def send_admin_report(bot: Bot) -> None:
     """Формирует текстовый отчёт и отправляет администратору."""
-    if kicked_users is None:
-        kicked_users = []
+    kicked_users = supabase_client.get_expired_users_last_day()
     try:
         metrics = {k: _fetch_one(q) for k, q in _SQL.items()}
     except Exception as e:

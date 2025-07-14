@@ -52,8 +52,8 @@ async def scheduled_daily_job(bot):
     # Тут выполняются периодические напоминания и отправляется статистика
     from daily_tasks import run_daily_tasks
     from admin_report import send_admin_report
-    stats, kicked = await run_daily_tasks(bot)
-    await send_admin_report(bot, kicked)
+    await run_daily_tasks(bot)
+    await send_admin_report(bot)
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +84,8 @@ async def main() -> None:
     if config.LOG_ON_THE_START:
         from daily_tasks import run_daily_tasks
         from admin_report import send_admin_report
-        stats, kicked = await run_daily_tasks(bot)
-        await send_admin_report(bot, kicked)
+        await run_daily_tasks(bot)
+        await send_admin_report(bot)
 
     # 6. Планировщик APScheduler
     scheduler = AsyncIOScheduler()       # планировщик фоновых задач

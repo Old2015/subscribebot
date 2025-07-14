@@ -440,14 +440,36 @@ def get_all_users():
 
 
 def get_new_users_last_day() -> list[tuple[int, str | None]]:
-    """Returns (telegram_id, username) for users created in the last 24h."""
+    """Returns (telegram_id, username) for users created during the previous day."""
     with _get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT telegram_id, username
               FROM users
-             WHERE created_at >= NOW() - interval '1 day'
+             WHERE created_at >= date_trunc('day', NOW()) - interval '1 day'
+               AND created_at <  date_trunc('day', NOW())
              ORDER BY created_at
+            """
+        )
+        return cur.fetchall()
+
+
+def get_expired_users_last_day() -> list[tuple[int, str | None]]:
+    """Returns users whose trial or subscription ended during the previous day."""
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT telegram_id, username
+              FROM users
+             WHERE (
+                     trial_end >= date_trunc('day', NOW()) - interval '1 day'
+                 AND trial_end <  date_trunc('day', NOW())
+                  )
+                OR (
+                     subscription_end >= date_trunc('day', NOW()) - interval '1 day'
+                 AND subscription_end <  date_trunc('day', NOW())
+                  )
+             ORDER BY telegram_id
             """
         )
         return cur.fetchall()
