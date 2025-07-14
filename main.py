@@ -81,6 +81,12 @@ async def main() -> None:
     # 5. Печатаем баланс master-адреса
     await print_master_balance_at_start(bot)
 
+    if config.LOG_ON_THE_START:
+        from daily_tasks import run_daily_tasks
+        from admin_report import send_admin_report
+        stats, kicked = await run_daily_tasks(bot)
+        await send_admin_report(bot, kicked)
+
     # 6. Планировщик APScheduler
     scheduler = AsyncIOScheduler()       # планировщик фоновых задач
 
