@@ -5,7 +5,7 @@ import logging                                    # логирование
 from datetime import datetime, timezone           # работа со временем
 from aiogram import Bot                           # тип бота
 from tron_service import derive_master, get_usdt_balance, get_total_balance_v2
-from utils import escape_md
+from html import escape as html_escape
 import config                                     # настройки проекта
 import supabase_client                            # работа с БД
 
@@ -76,33 +76,33 @@ async def send_admin_report(bot: Bot, kicked_users: list[tuple[int, str | None]]
 
 
     new_users_lines = "".join(
-        f"• • {uid} - {escape_md(uname or 'NoUsername')}\n" 
+        f"• • {uid} - {html_escape(uname or 'NoUsername')}\n"
         for uid, uname in new_users
     )
     kicked_lines = "".join(
-        f"• • {uid} - {escape_md(uname or 'NoUsername')}\n" 
+        f"• • {uid} - {html_escape(uname or 'NoUsername')}\n"
         for uid, uname in kicked_users
     )
 
     text = (
-        f"*Ежедневный отчёт — {today}*\n\n"
+        f"<b>Ежедневный отчёт — {today}</b>\n\n"
         f"• Баланс мастер‑кошелька: {usdt_master:.2f} USDT | {trx_master:.2f} TRX\n\n"
-        f"• Всего пользователей в базе: **{users_tot}**\n"
-        f"• Всего платежей в базе: **{pays_tot}** на сумму **{usdt_tot:.2f} USDT**\n\n"
-        f"• Новых пользователей за текущий месяц: **{users_mon}**\n"
-        f"• Платежей за текущий месяц: **{pays_mon}** на сумму **{usdt_mon:.2f} USDT**\n"
-        f"• Платежей за сутки: **{pays_day}** на сумму **{usdt_day:.2f} USDT**\n\n"
-        f"• Новых пользователей за сутки: **{users_day}**\n"
+        f"• Всего пользователей в базе: <b>{users_tot}</b>\n"
+        f"• Всего платежей в базе: <b>{pays_tot}</b> на сумму <b>{usdt_tot:.2f} USDT</b>\n\n"
+        f"• Новых пользователей за текущий месяц: <b>{users_mon}</b>\n"
+        f"• Платежей за текущий месяц: <b>{pays_mon}</b> на сумму <b>{usdt_mon:.2f} USDT</b>\n"
+        f"• Платежей за сутки: <b>{pays_day}</b> на сумму <b>{usdt_day:.2f} USDT</b>\n\n"
+        f"• Новых пользователей за сутки: <b>{users_day}</b>\n"
         f"{new_users_lines if new_users_lines else ''}"
-        f"• Удалено пользователей за сутки: **{len(kicked_users)}**\n"
+        f"• Удалено пользователей за сутки: <b>{len(kicked_users)}</b>\n"
         f"{kicked_lines if kicked_lines else ''}\n"
-        f"• Всего активных пользователей в базе: **{active_cnt}**\n"
-        f"• •  в т.ч. по тестам: **{trial_cnt}**\n"
-        f"• •  в т.ч. по подпискам: **{sub_cnt}**"
+        f"• Всего активных пользователей в базе: <b>{active_cnt}</b>\n"
+        f"• •  в т.ч. по тестам: <b>{trial_cnt}</b>\n"
+        f"• •  в т.ч. по подпискам: <b>{sub_cnt}</b>"
     )
 
     try:
-        await bot.send_message(config.ADMIN_CHAT_ID, text, parse_mode="Markdown")  # отправляем отчёт
+        await bot.send_message(config.ADMIN_CHAT_ID, text, parse_mode="HTML")  # отправляем отчёт
         log.info("Admin report sent ✔")
     except Exception as e:
         log.error("Failed to send admin report: %s", e)

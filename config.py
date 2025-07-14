@@ -52,6 +52,7 @@ FREE_TRIAL_DAYS = int(os.getenv("FREE_TRIAL_DAYS", "7"))
 
 CHECK_INTERVAL_MIN = int(os.getenv("CHECK_INTERVAL_MIN", "20"))
 DAILY_ANALYSIS_TIME = os.getenv("DAILY_ANALYSIS_TIME", "00:01")
+LOG_ON_THE_START = os.getenv("LOG_ON_THE_START", "false").lower() == "true"
 
 
 # ─── доверяем сертификатам Mozilla заранее ──────────────────────
