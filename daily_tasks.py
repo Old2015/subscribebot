@@ -92,7 +92,22 @@ async def run_daily_tasks(bot: Bot):
                     revoke_messages=True,
                 )
                 stats["kicked"] += 1
-                kicked_users.append((tg_id, user.get("username")))
+                uname = user.get("username")
+                kicked_users.append((tg_id, uname))
+
+                # удаляем из базы и уведомляем админов
+                deleted_username = supabase_client.delete_user_by_telegram_id(tg_id)
+                if config.ADMIN_CHAT_ID:
+                    uname_disp = (
+                        f"@{deleted_username}" if deleted_username else "(no username)"
+                    )
+                    try:
+                        await bot.send_message(
+                            config.ADMIN_CHAT_ID,
+                            f"❌ Пользователь удалён из базы: ChatID {tg_id}, Username {uname_disp}"
+                        )
+                    except Exception as e:
+                        log.warning("Failed to notify admin about deletion of %s: %s", tg_id, e)
             except Exception as e:
                 log.error("Kick failed for %s: %s", tg_id, e)
 

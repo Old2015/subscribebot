@@ -106,6 +106,19 @@ async def cmd_start(message: types.Message):
             return
         new_user_id = new_user["id"]
 
+        # --- уведомляем админов о новом пользователе ---
+        if config.ADMIN_CHAT_ID:
+            uname_display = (
+                f"@{username}" if username and username != "NoUsername" else "(no username)"
+            )
+            try:
+                await config.bot.send_message(
+                    config.ADMIN_CHAT_ID,
+                    f"👤 В базу добавлен пользователь: ChatID {telegram_id}, Username {uname_display}"
+                )
+            except Exception as e:
+                log.warning("Failed to notify admin about new user %s: %s", telegram_id, e)
+
 
 
 
