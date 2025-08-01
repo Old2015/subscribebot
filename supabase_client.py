@@ -138,6 +138,17 @@ def get_user_by_telegram_id(telegram_id: int):
             cols = [desc[0] for desc in cur.description]
             return dict(zip(cols, row))
 
+def delete_user_by_telegram_id(telegram_id: int) -> str | None:
+    """Удаляет пользователя и возвращает его username (или None)."""
+    with _get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM users WHERE telegram_id = %s RETURNING username",
+            (telegram_id,),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+
 def create_user_with_trial(telegram_id: int, username: str, trial_days: int):
     """
     Создаём нового пользователя:
